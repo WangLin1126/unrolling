@@ -1,0 +1,68 @@
+# ─── Configuration for unrolled Gaussian deblurring ───
+
+# Data (always full-image, no patching)
+data:
+  dataset_name: "DIV2K"
+  train_glob: "/home/lwang/storage/DIV2K/DIV2K_train_512_grid_10/*.png"
+  val_ratio: 0.1
+  test_glob: "/home/lwang/storage/DIV2K/DIV2K_valid_512_grid_10/*.png"
+  pad_border: 32               # reflect-pad for ALL FFT ops (dataset blur + model deconv)
+  blur:
+    blur_type: "gauss"
+    sigma_min: 0.8
+    sigma_max: 3.0
+    sigma_list: "3,3.5,4"
+    noise_prob: 1.0
+    noise_sigma_min: 0.04
+    noise_sigma_max: 0.05
+
+# Model
+model:
+  T: 10                         # number of unrolling stages
+  solver: "hqs"                # "hqs" | "admm" | "pg"
+  schedule: "uniform"          # "uniform" | "trainable"
+  schedule_kwargs: {}
+  denoiser: "dncnn"            # "dncnn" | "unet_small" | "resblock"
+  denoiser_kwargs:
+    mid_channels: 64
+    depth: 6                   # DnCNN conv layers
+    base_ch: 32                # SmallUNet base channels
+    num_levels: 2              # SmallUNet downsampling levels
+    num_blocks: 5              # ResBlock count
+  share_denoisers: false
+  inner_iters: 3
+  in_channels: 3
+
+  learnable_loss_weights: false
+  learnable_schedule: false
+
+# Loss
+loss:
+  - name: "charbonnier"
+    weight: 1.0
+  - name: "ssim"
+    weight: 0.2
+    
+# Training
+train:
+  epochs: 200
+  batch_size: 6
+  lr: 1.0e-4
+  weight_decay: 0.05
+  scheduler: "cosine"
+  step_size: 50
+  gamma: 0.5
+  grad_clip: 1.0
+  seed: 42
+  num_workers: 12
+  log_every: 20
+  val_every: 1
+  early_stop_patience: 20
+  run_test_after_train: true
+  gpus: "0"                     # e.g. "0,1,2,3"
+
+# Testing
+test:
+  batch_size: 1
+  save_images: true
+  num_vis_stages: 5
