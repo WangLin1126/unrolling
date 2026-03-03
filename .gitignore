@@ -216,12 +216,10 @@ __marimo__/
 .streamlit/secrets.toml
 
 .sii
+
 datasets/**
-!datasets/download.py
-unrolling_deblur/datasets/**
-!unrolling_deblur/datasets/
-!unrolling_deblur/datasets/synth_deblur.py
-!unrolling_deblur/datasets/__init__.py
+!datasets/synth_deblur.py
+!datasets/__init__.py
 *.pth
 *.png
 results
