@@ -6,7 +6,7 @@ from .base import BaseSolver
 
 
 class PGSolver(BaseSolver):
-    def step(self, x_t, denoiser, otf, beta, lam, inner_iters=1):
+    def step(self, x_t, denoiser, otf, beta, inner_iters=1):
         eta = beta
         otf_c = otf.unsqueeze(1) if otf.dim() == 3 else otf
         otf_conj = otf_c.conj()

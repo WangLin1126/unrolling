@@ -21,7 +21,6 @@ class BaseSolver(nn.Module, ABC):
         denoiser: DenoiserLike,
         otf: torch.Tensor,
         beta: torch.Tensor,
-        lam: torch.Tensor,
         inner_iters: int = 1,
     ) -> torch.Tensor:
         ...

@@ -16,13 +16,13 @@ NOISE_SIGMA_MAX=0.04
 TS=(5)                          # unrolling stages
 SOLVERS=("hqs")                  # hqs | admm | pg
 SCHEDULES=("uniform")            # uniform | trainable
-DENOISERS=("unet_small")              # dncnn | unet_small | resblock
+DENOISERS=("dncnn")              # dncnn | unet_small | resblock
 SHARE_DENOISERS=false
-INNER_ITERS=(3)
+INNER_ITERS=(1)
 
 # denoiser architecture
 MID_CHANNELS=64               # DnCNN / ResBlock hidden channels
-DEPTH=6                       # DnCNN conv layers
+DEPTH=15                       # DnCNN conv layers
 BASE_CH=32                    # SmallUNet base channels
 NUM_LEVELS=2                  # SmallUNet downsampling levels
 NUM_BLOCKS=5                  # ResBlock count
@@ -33,7 +33,7 @@ LEARNABLE_LOSS_WEIGHTS=(false)
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE=16
+BATCH_SIZE=24
 LR=1e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"            # cosine | step
@@ -46,8 +46,8 @@ LOG_EVERY=20
 VAL_EVERY=1
 EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
-GPUS="0"
-LOSS_MODES=("one_stage")              # last | all | one_stage
+GPUS="0,1,2,3"
+LOSS_MODES=("all")              # last | all | one_stage
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=1
 SAVE_IMAGES=true

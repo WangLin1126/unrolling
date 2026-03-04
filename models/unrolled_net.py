@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .schedule import build_schedule
+from .schedule import build_schedule, build_beta_schedule
 from .denoisers import build_denoiser
 from .solvers import build_solver
 from .fft_ops import gaussian_otf, fft_conv2d_circular
@@ -67,8 +67,10 @@ class UnrolledDeblurNet(nn.Module):
                 [build_denoiser(denoiser_name, **dk) for _ in range(T)]
             )
 
-        self.log_betas = nn.Parameter(torch.zeros(T))
-        self.log_lams = nn.Parameter(torch.zeros(T))
+        # self.log_betas = nn.Parameter(torch.zeros(T))
+        self.beta_schedule = build_beta_schedule(
+            name="geom", T=T, beta_min=0.5, beta_max=64.0, scale_by="inv_sigma2"
+        )
 
     @torch.no_grad()
     def _compute_targets_on_gpu(
@@ -125,7 +127,8 @@ class UnrolledDeblurNet(nn.Module):
 
         # per-stage deltas
         deltas = self.schedule(sigma)  # (T,)
-
+        betas = self.beta_schedule(sigma) # (T,)
+        
         # ── Resolve stage targets ───────────────────────────────
         stage_targets = None
         if precomputed_targets is not None:
@@ -151,8 +154,7 @@ class UnrolledDeblurNet(nn.Module):
         for idx, s in enumerate(range(self.T, 0, -1)):
             t = s - 1
             delta_t = deltas[t]
-            beta_t = self.log_betas[t].exp()
-            lam_t = self.log_lams[t].exp()
+            beta_t = betas[t]
 
             otf = gaussian_otf(delta_t, Hp, Wp, device=device, dtype=y.dtype)
 
@@ -161,7 +163,6 @@ class UnrolledDeblurNet(nn.Module):
                 denoiser=self.denoisers[t],
                 otf=otf,
                 beta=beta_t,
-                lam=lam_t,
                 inner_iters=self.inner_iters,
             )
             stage_outputs.append(x_t[:, :, p:p+H, p:p+W])
