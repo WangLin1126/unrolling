@@ -33,8 +33,8 @@ LEARNABLE_LOSS_WEIGHTS=(false)
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE=24
-LR=1e-4
+BATCH_SIZE=64
+LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"            # cosine | step
 STEP_SIZE=50                  # for step scheduler
@@ -47,7 +47,8 @@ VAL_EVERY=1
 EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
 GPUS="0,1,2,3"
-LOSS_MODES=("all")              # last | all | one_stage
+LOSS_MODES=("last" "one_stage")            # last | all | one_stage
+BETA_MODE="geom"              # "constant"| "geom" | "geom_inc | "geom_dec" | "delta_power" | "delta_interp"
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=1
 SAVE_IMAGES=true
@@ -83,6 +84,7 @@ python train.py  \
     --model.denoiser_kwargs.num_blocks ${NUM_BLOCKS} \
     --model.learnable_schedule ${LEARNABLE_SCHEDULE} \
     --model.learnable_loss_weights ${LEARNABLE_LOSS_WEIGHT} \
+    --model.beta_mode ${BETA_MODE} \
     --train.epochs ${EPOCHS} \
     --train.batch_size ${BATCH_SIZE} \
     --train.lr ${LR} \

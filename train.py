@@ -67,7 +67,7 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
         f"-hidden_{hidden_val}"
         f"-inner_{mc.get('inner_iters', 1)}"
         f"-schedule_{'learn' if mc.get('learnable_schedule') else mc['schedule']}"
-        f"-beta_increase"
+        f"-beta_{mc.get('beta_mode','geom')}"
         f"-lossw_{'learn' if mc.get('learnable_loss_weights') else 'uniform'}"
         f"-lmode_{tc.get('loss_mode')}"
     )
@@ -356,6 +356,7 @@ def main():
         pad_border=pad_border,
         denoiser_kwargs=mc.get("denoiser_kwargs", {}),
         schedule_kwargs=mc.get("schedule_kwargs", {}),
+        beta_mode=mc.get("beta_mode","geom")
     ).to(device)
 
     if use_dp:
