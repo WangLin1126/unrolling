@@ -15,7 +15,7 @@ NOISE_SIGMA_MAX=0.04
 # ── Model ───────────────────────────────────────────────────────
 TS=(5)                          # unrolling stages
 SOLVERS=("hqs")                  # hqs | admm | pg
-SCHEDULES=("uniform")            # uniform | trainable
+SIGMA_SCHEDULES=("geom")            # uniform | trainable ｜ geom ｜ power
 DENOISERS=("dncnn")              # dncnn | unet_small | resblock
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
@@ -28,12 +28,11 @@ NUM_LEVELS=2                  # SmallUNet downsampling levels
 NUM_BLOCKS=5                  # ResBlock count
 
 # schedule & loss
-LEARNABLE_SCHEDULES=(false)
 LEARNABLE_LOSS_WEIGHTS=(false)
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE=64
+BATCH_SIZE=72
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"            # cosine | step
@@ -46,9 +45,9 @@ LOG_EVERY=20
 VAL_EVERY=1
 EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
-GPUS="0,1,2,3"
-LOSS_MODES=("last" "one_stage")            # last | all | one_stage
-BETA_MODE="geom"              # "constant"| "geom" | "geom_inc | "geom_dec" | "delta_power" | "delta_interp"
+GPUS="0,1"
+LOSS_MODES=("all" "last" "one_stage")            # last | all | one_stage
+BETA_MODE="constant"              # "constant"| "geom" | "geom_inc | "geom_dec" | "delta_power" | "delta_interp"
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=1
 SAVE_IMAGES=true
@@ -56,11 +55,10 @@ NUM_VIS_STAGES=5
 
 for T in ${TS[@]}; do
 for SOLVER in ${SOLVERS[@]}; do
-for SCHEDULE in ${SCHEDULES[@]}; do
+for SIGMA_SCHEDULE in ${SIGMA_SCHEDULES[@]}; do
 for DENOISER in ${DENOISERS[@]}; do
 for INNER_ITER in ${INNER_ITERS[@]}; do
 for LEARNABLE_LOSS_WEIGHT in ${LEARNABLE_LOSS_WEIGHTS[@]}; do
-for LEARNABLE_SCHEDULE in ${LEARNABLE_SCHEDULES[@]}; do
 for LOSS_MODE in ${LOSS_MODES[@]}; do
 python train.py  \
     --data.train_glob "${TRAIN_GLOB}" \
@@ -73,7 +71,7 @@ python train.py  \
     --data.blur.noise_sigma_max ${NOISE_SIGMA_MAX} \
     --model.T ${T} \
     --model.solver ${SOLVER} \
-    --model.schedule ${SCHEDULE} \
+    --model.sigma_schedule ${SIGMA_SCHEDULE} \
     --model.denoiser ${DENOISER} \
     --model.share_denoisers ${SHARE_DENOISERS} \
     --model.inner_iters ${INNER_ITER} \
@@ -82,7 +80,6 @@ python train.py  \
     --model.denoiser_kwargs.base_ch ${BASE_CH} \
     --model.denoiser_kwargs.num_levels ${NUM_LEVELS} \
     --model.denoiser_kwargs.num_blocks ${NUM_BLOCKS} \
-    --model.learnable_schedule ${LEARNABLE_SCHEDULE} \
     --model.learnable_loss_weights ${LEARNABLE_LOSS_WEIGHT} \
     --model.beta_mode ${BETA_MODE} \
     --train.epochs ${EPOCHS} \
@@ -105,7 +102,6 @@ python train.py  \
     --test.save_images ${SAVE_IMAGES} \
     --test.num_vis_stages ${NUM_VIS_STAGES}
 
-done
 done
 done
 done

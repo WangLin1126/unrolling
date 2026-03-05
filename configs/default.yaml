@@ -20,8 +20,6 @@ data:
 model:
   T: 10                         # number of unrolling stages
   solver: "hqs"                # "hqs" | "admm" | "pg"
-  schedule: "uniform"          # "uniform" | "trainable"
-  schedule_kwargs: {}
   denoiser: "dncnn"            # "dncnn" | "unet_small" | "resblock"
   denoiser_kwargs:
     mid_channels: 64
@@ -29,6 +27,11 @@ model:
     base_ch: 32                # SmallUNet base channels
     num_levels: 2              # SmallUNet downsampling levels
     num_blocks: 5              # ResBlock count
+  schedule_kwargs:
+    init: "uniform"
+    r: 0.8
+    p: 2.0
+    front_heavy: true
   share_denoisers: false
   inner_iters: 3
   in_channels: 3

@@ -8,13 +8,13 @@ import math
 import torch
 import torch.nn as nn
 
-
+_EPS = 1e-12
 class UniformSchedule(nn.Module):
-    def __init__(self, T: int):
+    def __init__(self, T: int, **kwargs):
         super().__init__()
         self.T = T
 
-    def forward(self, sigma: torch.Tensor) -> torch.Tensor:
+    def forward(self, sigma: torch.Tensor = 1.0) -> torch.Tensor:
         delta = sigma / math.sqrt(self.T)
         return delta.expand(self.T)
 
@@ -22,7 +22,7 @@ class UniformSchedule(nn.Module):
 class TrainableSchedule(nn.Module):
     """Learnable decomposition: α_t = softmax(w)_t, δ_t = σ·√α_t."""
 
-    def __init__(self, T: int, init: str = "uniform"):
+    def __init__(self, T: int, init: str = "uniform", **kwargs):
         super().__init__()
         self.T = T
         if init == "uniform":
@@ -34,14 +34,58 @@ class TrainableSchedule(nn.Module):
         else:
             raise ValueError(f"Unknown init: {init}")
 
-    def forward(self, sigma: torch.Tensor) -> torch.Tensor:
+    def forward(self, sigma: torch.Tensor = 1.0) -> torch.Tensor:
         alpha = torch.softmax(self.logits, dim=0)
         return sigma * torch.sqrt(alpha)
 
+class GeomSchedule(nn.Module):
+    """
+    alpha_t ∝ r^(T-1-t)  (dec=True, front-heavy)
+    delta_t = sigma * sqrt(alpha_t)
+    """
+    def __init__(self, T: int, r: float = 0.8, front_heavy: bool = True, **kwargs):
+        super().__init__()
+        self.T = T
+        self.r = float(r)
+        self.front_heacy = bool(front_heavy)
+
+    def forward(self, sigma: torch.Tensor = 1.0) -> torch.Tensor:
+        device, dtype = sigma.device, sigma.dtype
+        t = torch.arange(self.T, device=device, dtype=dtype)
+        if self.front_heacy:
+            w = (self.r ** t)
+        else:
+            w = (self.r ** (self.T - 1 - t))
+        alpha = w / (w.sum() + _EPS)
+        return sigma * torch.sqrt(alpha)
+
+
+class PowerSchedule(nn.Module):
+    """
+    alpha_t ∝ (T-t)^p  (front_heavy=True)
+    delta_t = sigma * sqrt(alpha_t)
+    """
+    def __init__(self, T: int, p: float = 2.0, front_heavy: bool = True, **kwargs):
+        super().__init__()
+        self.T = T
+        self.p = float(p)
+        self.front_heavy = bool(front_heavy)
+
+    def forward(self, sigma: torch.Tensor = 1.0) -> torch.Tensor:
+        device, dtype = sigma.device, sigma.dtype
+        t = torch.arange(self.T, device=device, dtype=dtype)
+        if self.front_heavy:
+            w = (self.T - t) ** self.p
+        else:
+            w = (t + 1) ** self.p
+        alpha = w / (w.sum() + 1e-12)
+        return sigma * torch.sqrt(alpha)
 
 SCHEDULE_REGISTRY: dict[str, type] = {
     "uniform": UniformSchedule,
     "trainable": TrainableSchedule,
+    "geom": GeomSchedule,
+    "power": PowerSchedule,
 }
 
 
@@ -49,8 +93,6 @@ def build_schedule(name: str, T: int, **kwargs) -> nn.Module:
     if name not in SCHEDULE_REGISTRY:
         raise ValueError(f"Unknown schedule '{name}'. Choose from {list(SCHEDULE_REGISTRY)}")
     return SCHEDULE_REGISTRY[name](T=T, **kwargs)
-
-_EPS = 1e-12
 
 def _maybe_scale_by_noise(base: torch.Tensor, sigma: torch.Tensor, scale_by: str):
     """

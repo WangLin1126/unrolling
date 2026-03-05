@@ -56,7 +56,7 @@ class UnrolledDeblurNet(nn.Module):
         self.pad_border = pad_border
         self.schedule_name = schedule_name
 
-        self.schedule = build_schedule(schedule_name, T=T, **(schedule_kwargs or {}))
+        self.delta_schedule = build_schedule(schedule_name, T=T, **(schedule_kwargs or {}))
         self.solver = build_solver(solver_name)
 
         dk = dict(in_channels=in_channels, **(denoiser_kwargs or {}))
@@ -127,8 +127,9 @@ class UnrolledDeblurNet(nn.Module):
             sigma = sigma[0]  # use first value (all same in batch)
 
         # per-stage deltas
-        deltas = self.schedule(sigma)  # (T,)
-        betas = self.beta_schedule(sigma, deltas) # (T,)
+        # deltas = self.delta_schedule()  # (T,)
+        sigmas = self.delta_schedule(sigma) # (T,)
+        betas = self.beta_schedule(sigma, sigmas) # (T,)
         
         # ── Resolve stage targets ───────────────────────────────
         stage_targets = None
@@ -139,7 +140,7 @@ class UnrolledDeblurNet(nn.Module):
             stage_targets = [all_targets[s - 1] for s in range(self.T, 0, -1)]
         elif x_gt is not None and self.schedule_name == "trainable":
             # trainable schedule: must recompute with current deltas
-            all_targets = self._compute_targets_on_gpu(x_gt, deltas)
+            all_targets = self._compute_targets_on_gpu(x_gt, sigmas)
             stage_targets = [all_targets[s - 1] for s in range(self.T, 0, -1)]
             del all_targets
 
@@ -154,10 +155,10 @@ class UnrolledDeblurNet(nn.Module):
 
         for idx, s in enumerate(range(self.T, 0, -1)):
             t = s - 1
-            delta_t = deltas[t]
+            sigma_t = sigmas[t]
             beta_t = betas[t]
 
-            otf = gaussian_otf(delta_t, Hp, Wp, device=device, dtype=y.dtype)
+            otf = gaussian_otf(sigma_t, Hp, Wp, device=device, dtype=y.dtype)
 
             x_t = self.solver.step(
                 x_t,
@@ -174,5 +175,5 @@ class UnrolledDeblurNet(nn.Module):
             "pred": final,
             "stage_outputs": stage_outputs,
             "stage_targets": stage_targets,
-            "deltas": deltas,
+            "sigmas": sigmas,
         }

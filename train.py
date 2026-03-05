@@ -66,7 +66,7 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
         f"-depth_{depth_val}"
         f"-hidden_{hidden_val}"
         f"-inner_{mc.get('inner_iters', 1)}"
-        f"-schedule_{'learn' if mc.get('learnable_schedule') else mc['schedule']}"
+        f"-sigma_{mc['sigma_schedule']}"
         f"-beta_{mc.get('beta_mode','geom')}"
         f"-lossw_{'learn' if mc.get('learnable_loss_weights') else 'uniform'}"
         f"-lmode_{tc.get('loss_mode')}"
@@ -324,7 +324,12 @@ def main():
     # ── Data ────────────────────────────────────────────────────
     blur_cfg = BlurConfig(**dc["blur"])
     full_ds = SyntheticNonBlindDeblur(
-        dc["train_glob"], blur_cfg, pad_border=pad_border, T=T
+        dc["train_glob"], 
+        blur_cfg, 
+        pad_border=pad_border, 
+        T=T,
+        sigma_schedule_name = mc.get("sigma_schedule"),
+        sigma_schedule_kwargs = mc.get("schedule_kwargs", {}),
     )
 
     val_ratio = dc.get("val_ratio", 0.1)
@@ -344,7 +349,7 @@ def main():
     )
 
     # ── Model ───────────────────────────────────────────────────
-    schedule_name = "trainable" if mc.get("learnable_schedule") else mc["schedule"]
+    schedule_name = mc["sigma_schedule"]
     model = UnrolledDeblurNet(
         T=T,
         solver_name=mc["solver"],

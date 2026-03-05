@@ -19,6 +19,7 @@ schedule is 'uniform'.
 import glob
 import math
 import random
+from typing import Union
 from dataclasses import dataclass
 from PIL import Image
 
@@ -28,7 +29,7 @@ from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
 
 from models.fft_ops import gaussian_otf, fft_conv2d_circular
-
+from models.schedule import build_schedule
 
 def _parse_list(s: str):
     return [float(x) for x in s.split(",") if x.strip()]
@@ -54,15 +55,22 @@ class SyntheticNonBlindDeblur(Dataset):
         T:           number of unrolling stages (for precomputing targets)
     """
 
-    def __init__(self, image_glob: str, cfg: BlurConfig = BlurConfig(),
-                 pad_border: int = 32, T: int = 5):
+    def __init__(
+        self, 
+        image_glob: str, 
+        cfg: BlurConfig = BlurConfig(),
+        pad_border: int = 32, 
+        T: int = 5,
+        sigma_schedule_name: str = "uniform",
+        sigma_schedule_kwargs: dict | None = None
+        ):
         self.paths = sorted(glob.glob(image_glob))
         assert len(self.paths) > 0, f"No images found for {image_glob}"
         self.cfg = cfg
         self.pad_border = pad_border
         self.T = T
         self._sigma_candidates = _parse_list(cfg.sigma_list) if cfg.sigma_list else None
-
+        self.sigma_schedule = build_schedule(sigma_schedule_name, T=T, **(sigma_schedule_kwargs or {}))
     def __len__(self):
         return len(self.paths)
 
@@ -83,12 +91,14 @@ class SyntheticNonBlindDeblur(Dataset):
                 targets[t] = g_{δ_t} * targets[t-1]  (progressively blurred)
         """
         Hp, Wp = x_pad.shape[-2:]
-        delta = sigma / math.sqrt(self.T)
-
+        # delta = sigma / math.sqrt(self.T)
+        sigma_tensor = torch.tensor(sigma, device=x_pad.device, dtype=x_pad.dtype)
+        sigmas = self.sigma_schedule(sigma_tensor)  # (T,) tensor
         targets = [x_pad[:, :, p:p+H, p:p+W].squeeze(0)]  # targets[0] = clean
         current = x_pad
         for t in range(self.T):
-            otf_t = gaussian_otf(delta, Hp, Wp, device=current.device, dtype=current.dtype)
+            delta_t = float(sigmas[t].item())
+            otf_t = gaussian_otf(delta_t, Hp, Wp, device=current.device, dtype=current.dtype)
             current = fft_conv2d_circular(current, otf_t)
             targets.append(current[:, :, p:p+H, p:p+W].squeeze(0))
         return targets  # list of T+1 tensors, each (C, H, W)
