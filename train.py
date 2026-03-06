@@ -1,55 +1,59 @@
 #!/usr/bin/env python3
 """Training script for unrolled Gaussian deblurring with per-stage supervision.
 
-Targets are precomputed by the dataset on CPU and passed to the model,
-avoiding redundant GPU FFT computation each forward pass.
-
-Multi-GPU via DataParallel with custom scatter/gather.
+Features:
+  - Single-node multi-GPU training via DistributedDataParallel (DDP)
+  - Resume from checkpoint in cfg["model"]["checkpoint"] (directory or .pth file)
+  - Full checkpoint save/load: model / criterion / optimizer / scheduler / epoch / RNG / config
+  - Logging to file (and stdout on main process)
+  - No history.json; all run information is written to logs
 
 Usage:
-    python train.py --config configs/default.yaml
-    python train.py --config configs/default.yaml --train.gpus 0,1,2,3
+    torchrun --standalone --nproc_per_node=2 train.py --config configs/default.yaml
+    torchrun --standalone --nproc_per_node=2 train.py --config configs/default.yaml --train.lr 1e-4
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import logging
+import os
 import random
+import sys
 import time
-from pathlib import Path
+import traceback
 from datetime import datetime
+from pathlib import Path
+
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
 import yaml
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, Subset
+from torch.utils.data.distributed import DistributedSampler
 
 from datasets.synth_deblur import SyntheticNonBlindDeblur, BlurConfig
 from models.unrolled_net import UnrolledDeblurNet
 from utils.losses import build_combined_loss, StagewiseLoss
 
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 def build_exp_dir(cfg: dict, base: str = "results") -> Path:
-    """Build experiment directory from config.
-
-    Returns:
-        Path like results/DIV2K/T_5-solver_hqs-denoiser_dncnn-depth_8-hidden_64/20260210_143025/
-    """
     mc = cfg["model"]
     dc = cfg["data"]
     tc = cfg["train"]
     dk = mc.get("denoiser_kwargs", {})
 
     dataset_name = dc.get("dataset_name", "DIV2K")
-
-    # pick the relevant depth/hidden for the chosen denoiser
     denoiser = mc["denoiser"]
+
     if denoiser == "dncnn":
         depth_val = dk.get("depth", 8)
         hidden_val = dk.get("mid_channels", 64)
-    elif denoiser == "unet_small":
+    elif denoiser == "unet":
         depth_val = dk.get("num_levels", 2)
         hidden_val = dk.get("base_ch", 32)
     elif denoiser == "resblock":
@@ -67,17 +71,17 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
         f"-hidden_{hidden_val}"
         f"-inner_{mc.get('inner_iters', 1)}"
         f"-sigma_{mc['sigma_schedule']}"
-        f"-beta_{mc.get('beta_mode','geom')}"
+        f"-beta_{mc.get('beta_mode', 'geom')}"
         f"-lossw_{'learn' if mc.get('learnable_loss_weights') else 'uniform'}"
         f"-lmode_{tc.get('loss_mode')}"
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
     return Path(base) / dataset_name / params / timestamp
 
+
 def load_config(path: str) -> dict:
-    with open(path) as f:
+    with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
@@ -89,7 +93,6 @@ def override_config(cfg: dict, overrides: list[str]) -> dict:
             return sl == "true"
         if sl in ("null", "none"):
             return None
-        # int (avoid treating 1e-3 as int)
         try:
             if sl.startswith(("0x", "-0x", "+0x")):
                 return int(s, 16)
@@ -97,22 +100,24 @@ def override_config(cfg: dict, overrides: list[str]) -> dict:
                 return int(s)
         except Exception:
             pass
-        # float
         try:
             return float(s)
         except Exception:
-            return s  # fallback string
+            return s
+
     if len(overrides) % 2 != 0:
         raise ValueError("overrides must be key/value pairs, length must be even")
+
     for i in range(0, len(overrides), 2):
         keypath = overrides[i].lstrip("-")
         keys = keypath.split(".")
         raw = overrides[i + 1]
         d = cfg
         for k in keys[:-1]:
-            d = d.setdefault(k, {})  # auto-create intermediate dicts
+            d = d.setdefault(k, {})
         leaf = keys[-1]
         old = d.get(leaf)
+
         if isinstance(old, bool):
             val = raw.lower() in ("true", "1", "yes")
         elif isinstance(old, int) and not isinstance(old, bool):
@@ -120,7 +125,7 @@ def override_config(cfg: dict, overrides: list[str]) -> dict:
         elif isinstance(old, float):
             val = float(raw)
         elif old is None:
-            val = parse(raw)  # infer type when new field
+            val = parse(raw)
         else:
             val = raw
         d[leaf] = val
@@ -147,17 +152,15 @@ def collate_fn(batch):
     Returns:
         blur:    (B, C, H, W)
         sharp:   (B, C, H, W)
-        sigmas:  (B,) tensor
+        sigmas:  (B,)
         targets: list of T+1 tensors, each (B, C, H, W)
     """
     blurs = [b["blur"] for b in batch]
     sharps = [b["sharp"] for b in batch]
     sigmas = torch.tensor([b["sigma"] for b in batch], dtype=torch.float32)
-    target_lists = [b["targets"] for b in batch]  # list of lists
+    target_lists = [b["targets"] for b in batch]
 
     T_plus_1 = len(target_lists[0])
-
-    # check if padding needed
     shapes = [x.shape for x in blurs]
     need_pad = len(set(shapes)) > 1
 
@@ -177,8 +180,6 @@ def collate_fn(batch):
 
     blur_batch = torch.stack(blurs)
     sharp_batch = torch.stack(sharps)
-
-    # stack targets: list of T+1 tensors, each (B, C, H, W)
     targets_batch = [
         torch.stack([target_lists[b][t] for b in range(len(batch))])
         for t in range(T_plus_1)
@@ -196,338 +197,673 @@ def train_val_split(dataset, val_ratio: float, seed: int = 42):
     return Subset(dataset, indices[n_val:]), Subset(dataset, indices[:n_val])
 
 
-def parse_gpus(gpu_str: str) -> list[int]:
-    if not gpu_str or gpu_str.lower() == "none":
-        return []
-    return [int(g.strip()) for g in gpu_str.split(",") if g.strip()]
+def resolve_checkpoint_path(ckpt_cfg: str | None) -> Path | None:
+    if not ckpt_cfg:
+        return None
+    p = Path(ckpt_cfg).expanduser().resolve()
+    if p.is_dir():
+        p = p / "best.pth"
+    return p
 
 
-# ── DataParallel wrapper ────────────────────────────────────────────
+# ── DDP helpers ─────────────────────────────────────────────────────
 
-class _DPWrapper(nn.DataParallel):
-    """DataParallel that handles:
-      - sigma: scalar tensor replicated to each GPU
-      - x_gt: always None (we use precomputed_targets instead)
-      - precomputed_targets: list[Tensor] split along batch dim
-    """
+def is_dist() -> bool:
+    return dist.is_available() and dist.is_initialized()
 
-    def scatter(self, inputs, kwargs, device_ids):
-        # inputs = (y, sigma_tensor, x_gt=None, precomputed_targets)
-        y, sigma_tensor, x_gt, targets_list = inputs
-        n_gpu = len(device_ids)
 
-        y_chunks = y.chunk(n_gpu, dim=0)
+def get_rank() -> int:
+    return dist.get_rank() if is_dist() else 0
 
-        # sigma: replicate scalar to each GPU
-        if sigma_tensor.dim() == 0:
-            sigma_val = sigma_tensor.item()
-        else:
-            sigma_val = sigma_tensor[0].item()
 
-        # targets: split each of the T+1 tensors along batch dim
-        if targets_list is not None:
-            targets_chunks = []  # per-GPU: list of T+1 tensors
-            for i in range(n_gpu):
-                targets_chunks.append([
-                    t.chunk(n_gpu, dim=0)[i] for t in targets_list
-                ])
-        else:
-            targets_chunks = [None] * n_gpu
+def get_world_size() -> int:
+    return dist.get_world_size() if is_dist() else 1
 
-        scattered_inputs = []
-        for i in range(n_gpu):
-            dev = torch.device(f"cuda:{device_ids[i]}")
-            s_t = torch.tensor(sigma_val, device=dev, dtype=y.dtype)
-            yi = y_chunks[i].to(dev)
-            tgts = None
-            if targets_chunks[i] is not None:
-                tgts = [t.to(dev) for t in targets_chunks[i]]
-            scattered_inputs.append((yi, s_t, None, tgts))
 
-        scattered_kwargs = [{} for _ in range(n_gpu)]
-        return scattered_inputs, scattered_kwargs
+def is_main_process() -> bool:
+    return get_rank() == 0
 
-    def gather(self, outputs, output_device):
-        if isinstance(outputs[0], dict):
-            gathered = {}
-            for key in outputs[0]:
-                vals = [o[key] for o in outputs]
-                if vals[0] is None:
-                    gathered[key] = None
-                elif isinstance(vals[0], torch.Tensor):
-                    gathered[key] = torch.cat(
-                        [v.to(output_device) for v in vals], dim=0
-                    )
-                elif isinstance(vals[0], list):
-                    n_stages = len(vals[0])
-                    gathered[key] = [
-                        torch.cat(
-                            [vals[g][s].to(output_device) for g in range(len(vals))],
-                            dim=0,
-                        )
-                        for s in range(n_stages)
-                    ]
-                else:
-                    gathered[key] = vals[0]
-            return gathered
-        return super().gather(outputs, output_device)
+
+def setup_ddp():
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        dist.init_process_group(backend="nccl", init_method="env://")
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+        use_ddp = True
+    else:
+        rank = 0
+        world_size = 1
+        local_rank = 0
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        use_ddp = False
+    return use_ddp, rank, world_size, local_rank, device
+
+
+def cleanup_ddp():
+    if is_dist():
+        dist.destroy_process_group()
+
+
+# ── Logging ─────────────────────────────────────────────────────────
+
+def setup_logger(log_file: Path, rank: int) -> logging.Logger:
+    logger = logging.getLogger(f"train_rank{rank}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    if logger.handlers:
+        logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # All ranks log to their own file; rank 0 also logs to shared train.log
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    if rank == 0:
+        shared_log = log_file.parent / "train.log"
+        if shared_log.resolve() != log_file.resolve():
+            fh2 = logging.FileHandler(shared_log, encoding="utf-8")
+            fh2.setLevel(logging.INFO)
+            fh2.setFormatter(formatter)
+            logger.addHandler(fh2)
+
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setLevel(logging.INFO)
+        sh.setFormatter(formatter)
+        logger.addHandler(sh)
+
+    return logger
+
+
+# ── Checkpoint helpers ──────────────────────────────────────────────
+
+def get_rng_state() -> dict:
+    state = {
+        "python_random": random.getstate(),
+        "numpy_random": np.random.get_state(),
+        "torch_random": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda_random"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def set_rng_state(state: dict):
+    if not state:
+        return
+    if "python_random" in state:
+        random.setstate(state["python_random"])
+    if "numpy_random" in state:
+        np.random.set_state(state["numpy_random"])
+    if "torch_random" in state:
+        torch.set_rng_state(state["torch_random"])
+    if torch.cuda.is_available() and "cuda_random" in state:
+        torch.cuda.set_rng_state_all(state["cuda_random"])
+
+
+def unwrap_model(m: nn.Module) -> nn.Module:
+    return m.module if isinstance(m, DDP) else m
+
+
+def save_checkpoint(
+    path: Path,
+    model: nn.Module,
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    epoch: int,
+    best_psnr: float,
+    best_val_loss: float,
+    no_improve_count: int,
+    cfg: dict,
+    extra: dict | None = None,
+):
+    raw_model = unwrap_model(model)
+    raw_criterion = unwrap_model(criterion)
+
+    payload = {
+        "epoch": epoch,
+        "model": raw_model.state_dict(),
+        "criterion": raw_criterion.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "best_psnr": best_psnr,
+        "best_val_loss": best_val_loss,
+        "no_improve_count": no_improve_count,
+        "config": cfg,
+        "rng_state": get_rng_state(),
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if extra:
+        payload.update(extra)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, path)
+
+
+def load_checkpoint(
+    ckpt_path: Path,
+    model: nn.Module,
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler=None,
+    device: torch.device | str = "cpu",
+    logger: logging.Logger | None = None,
+) -> dict:
+    if logger:
+        logger.info(f"Loading checkpoint from: {ckpt_path}")
+
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    raw_model = unwrap_model(model)
+    raw_criterion = unwrap_model(criterion)
+
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        raw_model.load_state_dict(ckpt["model"], strict=True)
+
+        if "criterion" in ckpt:
+            try:
+                raw_criterion.load_state_dict(ckpt["criterion"], strict=False)
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to load criterion state: {e}")
+
+        if optimizer is not None and ckpt.get("optimizer") is not None:
+            optimizer.load_state_dict(ckpt["optimizer"])
+
+        if scheduler is not None and ckpt.get("scheduler") is not None:
+            scheduler.load_state_dict(ckpt["scheduler"])
+
+        if "rng_state" in ckpt:
+            try:
+                set_rng_state(ckpt["rng_state"])
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Failed to restore RNG state: {e}")
+
+        return ckpt
+
+    # legacy pure-state-dict
+    raw_model.load_state_dict(ckpt, strict=True)
+    return {
+        "epoch": 0,
+        "best_psnr": 0.0,
+        "best_val_loss": float("inf"),
+        "no_improve_count": 0,
+        "legacy_state_dict_only": True,
+    }
 
 
 # ── Main ────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/default.yaml")
-    args, unknown = parser.parse_known_args()
+    use_ddp, rank, world_size, local_rank, device = setup_ddp()
 
-    cfg = load_config(args.config)
-    if unknown:
-        cfg = override_config(cfg, unknown)
+    logger = None
+    try:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--config", type=str, default="configs/default.yaml")
+        args, unknown = parser.parse_known_args()
 
-    tc = cfg["train"]
-    mc = cfg["model"]
-    dc = cfg["data"]
+        cfg = load_config(args.config)
+        if unknown:
+            cfg = override_config(cfg, unknown)
 
-    seed_everything(tc["seed"])
+        tc = cfg["train"]
+        mc = cfg["model"]
+        dc = cfg["data"]
 
-    pad_border = dc.get("pad_border", 32)
-    T = mc["T"]
+        seed_everything(tc["seed"] + rank)
 
-    # ── Device / multi-GPU setup ────────────────────────────────
-    gpu_ids = parse_gpus(tc.get("gpus", ""))
-    if gpu_ids:
-        device = torch.device(f"cuda:{gpu_ids[0]}")
-        torch.cuda.set_device(device)
-        use_dp = len(gpu_ids) > 1
-        print(f"Using GPUs: {gpu_ids}  (DataParallel={use_dp})")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-        gpu_ids = []
-        use_dp = False
-        print("Using single GPU")
-    else:
-        device = torch.device("cpu")
-        gpu_ids = []
-        use_dp = False
-        print("Using CPU")
+        ckpt_cfg = mc.get("checkpoint", None)
+        resume_ckpt = resolve_checkpoint_path(ckpt_cfg)
 
-    # ── Experiment directory ────────────────────────────────────
-    exp_dir = build_exp_dir(cfg)
-    train_dir = exp_dir / "train"
-    test_dir = exp_dir / "test"
-    train_dir.mkdir(parents=True, exist_ok=True)
+        if resume_ckpt is not None:
+            if not resume_ckpt.exists():
+                raise FileNotFoundError(f"Checkpoint not found: {resume_ckpt}")
+            train_dir = resume_ckpt.parent
+            exp_dir = train_dir.parent
+            test_dir = exp_dir / "test"
+        else:
+            exp_dir = build_exp_dir(cfg)
+            train_dir = exp_dir / "train"
+            test_dir = exp_dir / "test"
 
-    with open(train_dir / "config.yaml", "w") as f:
-        yaml.dump(cfg, f, default_flow_style=False)
-    print(f"Experiment dir: {exp_dir}")
+        train_dir.mkdir(parents=True, exist_ok=True)
+        test_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Data ────────────────────────────────────────────────────
-    blur_cfg = BlurConfig(**dc["blur"])
-    full_ds = SyntheticNonBlindDeblur(
-        dc["train_glob"], 
-        blur_cfg, 
-        pad_border=pad_border, 
-        T=T,
-        sigma_schedule_name = mc.get("sigma_schedule"),
-        sigma_schedule_kwargs = mc.get("schedule_kwargs", {}),
-    )
+        rank_log = train_dir / f"train_rank{rank}.log"
+        logger = setup_logger(rank_log, rank=rank)
 
-    val_ratio = dc.get("val_ratio", 0.1)
-    train_ds, val_ds = train_val_split(full_ds, val_ratio, seed=tc["seed"])
-    print(f"Data: {len(full_ds)} images → train {len(train_ds)} / val {len(val_ds)}")
-    print(f"Config: T={T}, pad_border={pad_border}, precomputed targets on CPU")
+        if is_main_process():
+            with open(train_dir / "config.yaml", "w") as f:
+                yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=tc["batch_size"], shuffle=True,
-        num_workers=tc["num_workers"], pin_memory=True,
-        collate_fn=collate_fn, drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=tc["batch_size"], shuffle=False,
-        num_workers=tc["num_workers"], pin_memory=True,
-        collate_fn=collate_fn,
-    )
+        logger.info("=" * 80)
+        logger.info("Starting training")
+        logger.info(f"Rank={rank} | World size={world_size} | Local rank={local_rank}")
+        logger.info(f"Device: {device}")
+        logger.info(f"Experiment dir: {exp_dir.resolve()}")
+        logger.info(f"Train dir: {train_dir.resolve()}")
+        logger.info(f"Test dir: {test_dir.resolve()}")
+        if is_main_process():
+            logger.info("Full config:\n" + yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
 
-    # ── Model ───────────────────────────────────────────────────
-    schedule_name = mc["sigma_schedule"]
-    model = UnrolledDeblurNet(
-        T=T,
-        solver_name=mc["solver"],
-        schedule_name=schedule_name,
-        denoiser_name=mc["denoiser"],
-        share_denoisers=mc["share_denoisers"],
-        inner_iters=mc["inner_iters"],
-        in_channels=mc["in_channels"],
-        pad_border=pad_border,
-        denoiser_kwargs=mc.get("denoiser_kwargs", {}),
-        schedule_kwargs=mc.get("schedule_kwargs", {}),
-        beta_mode=mc.get("beta_mode","geom")
-    ).to(device)
+        pad_border = dc.get("pad_border", 32)
+        T = mc["T"]
 
-    if use_dp:
-        model = _DPWrapper(model, device_ids=gpu_ids, output_device=gpu_ids[0])
-
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model: {mc['solver'].upper()} solver, {mc['denoiser']} denoiser, "
-          f"T={T}, schedule={schedule_name}")
-    print(f"Trainable params: {n_params:,}")
-
-    # ── Loss ────────────────────────────────────────────────────
-    base_loss = build_combined_loss(cfg["loss"]).to(device)
-    criterion = StagewiseLoss(
-        T=T,
-        base_loss=base_loss,
-        learnable=mc.get("learnable_loss_weights", False),
-        mode=tc.get("loss_mode", "all")
-    ).to(device)
-
-    # ── Optimiser ───────────────────────────────────────────────
-    all_params = list(model.parameters()) + list(criterion.parameters())
-    optimizer = torch.optim.AdamW(
-        all_params, lr=tc["lr"], weight_decay=tc["weight_decay"]
-    )
-    if tc["scheduler"] == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=tc["epochs"]
+        # ── Data ────────────────────────────────────────────────
+        blur_cfg = BlurConfig(**dc["blur"])
+        full_ds = SyntheticNonBlindDeblur(
+            dc["train_glob"],
+            blur_cfg,
+            pad_border=pad_border,
+            T=T,
+            sigma_schedule_name=mc.get("sigma_schedule"),
+            sigma_schedule_kwargs=mc.get("schedule_kwargs", {}),
         )
-    elif tc["scheduler"] == "step":
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=tc["step_size"], gamma=tc["gamma"]
+
+        val_ratio = dc.get("val_ratio", 0.1)
+        train_ds, val_ds = train_val_split(full_ds, val_ratio, seed=tc["seed"])
+
+        train_sampler = DistributedSampler(train_ds, shuffle=True) if use_ddp else None
+        val_sampler = DistributedSampler(val_ds, shuffle=False) if use_ddp else None
+
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=tc["batch_size"],
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+            num_workers=tc["num_workers"],
+            pin_memory=True,
+            collate_fn=collate_fn,
+            drop_last=True,
+            persistent_workers=tc["num_workers"] > 0,
         )
-    else:
-        scheduler = None
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=tc["batch_size"],
+            shuffle=False,
+            sampler=val_sampler,
+            num_workers=tc["num_workers"],
+            pin_memory=True,
+            collate_fn=collate_fn,
+            persistent_workers=tc["num_workers"] > 0,
+        )
 
-    # ── Training loop ───────────────────────────────────────────
-    best_psnr = 0.0
-    best_val_loss = float("inf")
-    patience = tc.get("early_stop_patience", 0)
-    no_improve_count = 0
-    history = []
-    use_precomputed = (schedule_name != "trainable")
+        if is_main_process():
+            logger.info(f"Data: total={len(full_ds)} | train={len(train_ds)} | val={len(val_ds)}")
+            logger.info(f"Config summary: T={T}, pad_border={pad_border}, precomputed targets on CPU")
 
-    for epoch in range(1, tc["epochs"] + 1):
-        model.train()
-        criterion.train()
-        epoch_loss = 0.0
-        t0 = time.time()
+        # ── Model ───────────────────────────────────────────────
+        schedule_name = mc["sigma_schedule"]
+        model = UnrolledDeblurNet(
+            T=T,
+            solver_name=mc["solver"],
+            schedule_name=schedule_name,
+            denoiser_name=mc["denoiser"],
+            share_denoisers=mc["share_denoisers"],
+            inner_iters=mc["inner_iters"],
+            in_channels=mc["in_channels"],
+            pad_border=pad_border,
+            denoiser_kwargs=mc.get("denoiser_kwargs", {}),
+            schedule_kwargs=mc.get("schedule_kwargs", {}),
+            beta_mode=mc.get("beta_mode", "geom"),
+            beta_kwargs=mc.get("beta_kwargs", {}),
+        ).to(device)
 
-        for step, (blur, sharp, sigmas, targets) in enumerate(train_loader, 1):
-            blur = blur.to(device)
-            sharp = sharp.to(device)
-            sigmas = sigmas.to(device)
+        if tc.get("use_compile", False):
+            model = torch.compile(model)
 
-            if use_precomputed:
-                # targets already on CPU from dataloader, send to GPU
-                targets_gpu = [t.to(device) for t in targets]
-                result = model(blur, sigmas, None, targets_gpu)
-            else:
-                # trainable schedule: pass x_gt, model recomputes targets
-                result = model(blur, sigmas, sharp, None)
+        base_loss = build_combined_loss(cfg["loss"]).to(device)
+        criterion = StagewiseLoss(
+            T=T,
+            base_loss=base_loss,
+            learnable=mc.get("learnable_loss_weights", False),
+            mode=tc.get("loss_mode", "all"),
+        ).to(device)
 
-            loss, info = criterion(result["stage_outputs"], result["stage_targets"])
+        if use_ddp:
+            model = DDP(model, device_ids=[local_rank], output_device=local_rank, broadcast_buffers=False)
 
-            optimizer.zero_grad()
-            loss.backward()
-            if tc["grad_clip"] > 0:
-                nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
-            optimizer.step()
+            criterion_has_params = any(p.requires_grad for p in criterion.parameters())
+            if criterion_has_params:
+                criterion = DDP(
+                    criterion,
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    broadcast_buffers=False,
+                )
 
-            epoch_loss += loss.item()
+        n_params = sum(p.numel() for p in unwrap_model(model).parameters() if p.requires_grad)
+        if is_main_process():
+            logger.info(
+                f"Model: {mc['solver'].upper()} solver, {mc['denoiser']} denoiser, "
+                f"T={T}, schedule={schedule_name}"
+            )
+            logger.info(f"Trainable params: {n_params:,}")
 
-            if step % tc["log_every"] == 0:
-                w_str = ", ".join(f"{w:.3f}" for w in info["weights"])
-                print(f"  [E{epoch} S{step}] loss={loss.item():.5f}  "
-                      f"stage_losses={[f'{l:.4f}' for l in info['per_stage_loss']]}  "
-                      f"weights=[{w_str}]")
+        # ── Optimizer / Scheduler ───────────────────────────────
+        all_params = list(model.parameters()) + list(criterion.parameters())
+        optimizer = torch.optim.AdamW(
+            all_params, lr=tc["lr"], weight_decay=tc["weight_decay"]
+        )
 
-        if scheduler is not None:
-            scheduler.step()
+        if tc["scheduler"] == "cosine":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=tc["epochs"]
+            )
+        elif tc["scheduler"] == "step":
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, step_size=tc["step_size"], gamma=tc["gamma"]
+            )
+        else:
+            scheduler = None
 
-        avg_loss = epoch_loss / max(step, 1)
-        elapsed = time.time() - t0
-        print(f"Epoch {epoch}/{tc['epochs']}  loss={avg_loss:.5f}  "
-              f"lr={optimizer.param_groups[0]['lr']:.2e}  time={elapsed:.1f}s")
+        # ── Resume ──────────────────────────────────────────────
+        start_epoch = 1
+        best_psnr = 0.0
+        best_val_loss = float("inf")
+        patience = tc.get("early_stop_patience", 0)
+        no_improve_count = 0
+        use_precomputed = (schedule_name != "trainable")
 
-        # ── Validation ──────────────────────────────────────────
-        if epoch % tc["val_every"] == 0:
-            model.eval()
-            criterion.eval()
-            val_loss_sum = 0.0
-            val_psnr_sum = 0.0
-            val_count = 0
+        if resume_ckpt is not None:
+            ckpt = load_checkpoint(
+                ckpt_path=resume_ckpt,
+                model=model,
+                criterion=criterion,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                device=device,
+                logger=logger,
+            )
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+            best_psnr = float(ckpt.get("best_psnr", 0.0))
+            best_val_loss = float(ckpt.get("best_val_loss", float("inf")))
+            no_improve_count = int(ckpt.get("no_improve_count", 0))
 
-            with torch.no_grad():
-                for blur, sharp, sigmas, targets in val_loader:
-                    blur = blur.to(device)
-                    sharp = sharp.to(device)
-                    sigmas = sigmas.to(device)
+            logger.info(
+                f"Resumed training from epoch={start_epoch} "
+                f"(previous epoch={ckpt.get('epoch', 0)})"
+            )
+            logger.info(
+                f"Recovered states: best_psnr={best_psnr:.4f}, "
+                f"best_val_loss={best_val_loss:.6f}, "
+                f"no_improve_count={no_improve_count}"
+            )
+            if ckpt.get("legacy_state_dict_only", False):
+                logger.warning(
+                    "Loaded a legacy checkpoint containing only model.state_dict(). "
+                    "Optimizer/scheduler/criterion/RNG were not restored."
+                )
 
-                    if use_precomputed:
-                        targets_gpu = [t.to(device) for t in targets]
-                        result = model(blur, sigmas, None, targets_gpu)
+        # ── Training loop ───────────────────────────────────────
+        early_stop_flag = False
+
+        for epoch in range(start_epoch, tc["epochs"] + 1):
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+
+            model.train()
+            criterion.train()
+
+            t0 = time.time()
+            train_loss_sum_local = 0.0
+            train_count_local = 0
+
+            for step, (blur, sharp, sigmas, targets) in enumerate(train_loader, 1):
+                blur = blur.to(device, non_blocking=True)
+                sharp = sharp.to(device, non_blocking=True)
+                sigmas = sigmas.to(device, non_blocking=True)
+
+                if use_precomputed:
+                    targets_gpu = [t.to(device, non_blocking=True) for t in targets]
+                    result = model(blur, sigmas, None, targets_gpu)
+                else:
+                    result = model(blur, sigmas, sharp, None)
+
+                loss, info = criterion(result["stage_outputs"], result["stage_targets"])
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+
+                if tc["grad_clip"] > 0:
+                    nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
+
+                optimizer.step()
+
+                bs = blur.shape[0]
+                train_loss_sum_local += loss.item() * bs
+                train_count_local += bs
+
+                if is_main_process() and step % tc["log_every"] == 0:
+                    w_str = ", ".join(f"{w:.3f}" for w in info["weights"])
+                    logger.info(
+                        f"[Train] E{epoch} S{step} "
+                        f"loss={loss.item():.5f} "
+                        f"stage_losses={[f'{l:.4f}' for l in info['per_stage_loss']]} "
+                        f"weights=[{w_str}]"
+                    )
+
+            if scheduler is not None:
+                scheduler.step()
+
+            train_loss_sum_tensor = torch.tensor(train_loss_sum_local, device=device, dtype=torch.float64)
+            train_count_tensor = torch.tensor(train_count_local, device=device, dtype=torch.float64)
+
+            if use_ddp:
+                dist.all_reduce(train_loss_sum_tensor, op=dist.ReduceOp.SUM)
+                dist.all_reduce(train_count_tensor, op=dist.ReduceOp.SUM)
+
+            avg_loss = (train_loss_sum_tensor / train_count_tensor.clamp_min(1.0)).item()
+            elapsed = time.time() - t0
+            current_lr = optimizer.param_groups[0]["lr"]
+
+            if is_main_process():
+                logger.info(
+                    f"[Epoch] {epoch}/{tc['epochs']} "
+                    f"train_loss={avg_loss:.5f} "
+                    f"lr={current_lr:.2e} "
+                    f"time={elapsed:.1f}s"
+                )
+
+                save_checkpoint(
+                    train_dir / "last.pth",
+                    model=model,
+                    criterion=criterion,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch,
+                    best_psnr=best_psnr,
+                    best_val_loss=best_val_loss,
+                    no_improve_count=no_improve_count,
+                    cfg=cfg,
+                    extra={"tag": "last"},
+                )
+
+            # ── Validation ──────────────────────────────────────
+            if epoch % tc["val_every"] == 0:
+                model.eval()
+                criterion.eval()
+
+                val_loss_sum_local = 0.0
+                val_psnr_sum_local = 0.0
+                val_count_local = 0.0
+
+                with torch.no_grad():
+                    for blur, sharp, sigmas, targets in val_loader:
+                        blur = blur.to(device, non_blocking=True)
+                        sharp = sharp.to(device, non_blocking=True)
+                        sigmas = sigmas.to(device, non_blocking=True)
+
+                        if use_precomputed:
+                            targets_gpu = [t.to(device, non_blocking=True) for t in targets]
+                            result = model(blur, sigmas, None, targets_gpu)
+                        else:
+                            result = model(blur, sigmas, sharp, None)
+
+                        loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
+                        val_loss_sum_local += loss_v.item() * blur.shape[0]
+
+                        pred = result["pred"]
+                        for i in range(pred.shape[0]):
+                            val_psnr_sum_local += psnr(pred[i], sharp[i])
+                            val_count_local += 1
+
+                val_loss_sum_tensor = torch.tensor(val_loss_sum_local, device=device, dtype=torch.float64)
+                val_psnr_sum_tensor = torch.tensor(val_psnr_sum_local, device=device, dtype=torch.float64)
+                val_count_tensor = torch.tensor(val_count_local, device=device, dtype=torch.float64)
+
+                if use_ddp:
+                    dist.all_reduce(val_loss_sum_tensor, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(val_psnr_sum_tensor, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(val_count_tensor, op=dist.ReduceOp.SUM)
+
+                avg_val_loss = (val_loss_sum_tensor / val_count_tensor.clamp_min(1.0)).item()
+                avg_psnr = (val_psnr_sum_tensor / val_count_tensor.clamp_min(1.0)).item()
+
+                if is_main_process():
+                    logger.info(
+                        f"[Val] epoch={epoch} val_psnr={avg_psnr:.2f} dB "
+                        f"val_loss={avg_val_loss:.5f}"
+                    )
+
+                    if avg_psnr > best_psnr:
+                        best_psnr = avg_psnr
+                        save_checkpoint(
+                            train_dir / "best.pth",
+                            model=model,
+                            criterion=criterion,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            epoch=epoch,
+                            best_psnr=best_psnr,
+                            best_val_loss=best_val_loss,
+                            no_improve_count=no_improve_count,
+                            cfg=cfg,
+                            extra={"tag": "best_by_psnr"},
+                        )
+                        logger.info(f"Saved best checkpoint: best.pth (PSNR={best_psnr:.2f})")
+
+                    if avg_val_loss < best_val_loss:
+                        best_val_loss = avg_val_loss
+                        no_improve_count = 0
+                        logger.info("Validation loss improved.")
                     else:
-                        result = model(blur, sigmas, sharp, None)
+                        no_improve_count += 1
+                        logger.info(
+                            f"Validation loss did not improve "
+                            f"({no_improve_count}/{patience})"
+                        )
 
-                    loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
-                    val_loss_sum += loss_v.item() * blur.shape[0]
+                    if epoch % 10 == 0:
+                        save_checkpoint(
+                            train_dir / f"ckpt_e{epoch}.pth",
+                            model=model,
+                            criterion=criterion,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            epoch=epoch,
+                            best_psnr=best_psnr,
+                            best_val_loss=best_val_loss,
+                            no_improve_count=no_improve_count,
+                            cfg=cfg,
+                            extra={"tag": f"epoch_{epoch}"},
+                        )
+                        logger.info(f"Saved periodic checkpoint: ckpt_e{epoch}.pth")
 
-                    pred = result["pred"]
-                    for i in range(pred.shape[0]):
-                        val_psnr_sum += psnr(pred[i], sharp[i])
-                        val_count += 1
+                    if patience > 0 and no_improve_count >= patience:
+                        logger.info(f"Early stopping at epoch {epoch}")
+                        save_checkpoint(
+                            train_dir / "ckpt_early_stop.pth",
+                            model=model,
+                            criterion=criterion,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            epoch=epoch,
+                            best_psnr=best_psnr,
+                            best_val_loss=best_val_loss,
+                            no_improve_count=no_improve_count,
+                            cfg=cfg,
+                            extra={"early_stopped": True, "tag": "early_stop"},
+                        )
+                        early_stop_flag = True
 
-            avg_val_loss = val_loss_sum / max(val_count, 1)
-            avg_psnr = val_psnr_sum / max(val_count, 1)
-            print(f"  Val PSNR: {avg_psnr:.2f} dB  Val Loss: {avg_val_loss:.5f}")
+                if use_ddp:
+                    stop_tensor = torch.tensor(1 if early_stop_flag else 0, device=device, dtype=torch.int32)
+                    dist.broadcast(stop_tensor, src=0)
+                    early_stop_flag = bool(stop_tensor.item())
 
-            history.append({
-                "epoch": epoch, "train_loss": avg_loss,
-                "val_loss": avg_val_loss, "val_psnr": avg_psnr,
-            })
+                if early_stop_flag:
+                    break
 
-            raw_model = model.module if use_dp else model
-            if avg_psnr > best_psnr:
-                best_psnr = avg_psnr
-                torch.save(raw_model.state_dict(), train_dir / "best.pth")
-                print(f"  ✓ Saved best model (PSNR={best_psnr:.2f})")
+        if is_main_process():
+            logger.info(f"Training done. Best val PSNR: {best_psnr:.2f} dB")
+            logger.info(f"Checkpoints in: {train_dir.resolve()}")
 
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                no_improve_count = 0
+        # ── Auto test ───────────────────────────────────────────
+        if use_ddp:
+            dist.barrier()
+
+        if tc.get("run_test_after_train", True) and is_main_process():
+            best_ckpt = train_dir / "best.pth"
+            if best_ckpt.exists():
+                logger.info("=" * 50)
+                logger.info("Running test...")
+                logger.info("=" * 50)
+                from evaluate import run_evaluate
+                run_evaluate(cfg, str(best_ckpt), str(test_dir))
             else:
-                no_improve_count += 1
-                print(f"  ⚠ Val loss did not improve ({no_improve_count}/{patience})")
+                logger.warning("Skip test because best.pth does not exist.")
 
-            if patience > 0 and no_improve_count >= patience:
-                print(f"\n✗ Early stopping at epoch {epoch}")
-                torch.save({
-                    "epoch": epoch, "model": raw_model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "best_psnr": best_psnr, "early_stopped": True,
-                }, train_dir / "ckpt_early_stop.pth")
-                break
+        if use_ddp:
+            dist.barrier()
 
-        if epoch % 10 == 0:
-            raw_model = model.module if use_dp else model
-            torch.save({
-                "epoch": epoch, "model": raw_model.state_dict(),
-                "optimizer": optimizer.state_dict(), "best_psnr": best_psnr,
-            }, train_dir / f"ckpt_e{epoch}.pth")
-
-    with open(train_dir / "history.json", "w") as f:
-        json.dump(history, f, indent=2)
-
-    print(f"\nTraining done. Best val PSNR: {best_psnr:.2f} dB")
-    print(f"Checkpoints in: {train_dir.resolve()}")
-
-    # ── Auto test ───────────────────────────────────────────────
-    if tc.get("run_test_after_train", True):
-        print(f"\n{'=' * 50}")
-        print("Running test...")
-        print(f"{'=' * 50}\n")
-
-        from test import run_test
-        run_test(cfg, str(train_dir / "best.pth"), str(test_dir))
+    except Exception as e:
+        if logger is None:
+            # fallback logger to stderr if failure happens very early
+            print("Unhandled exception before logger setup.", file=sys.stderr)
+            traceback.print_exc()
+        else:
+            logger.exception("Unhandled exception during training.")
+            try:
+                # only main process saves crash checkpoint to avoid file collisions
+                if is_main_process() and "train_dir" in locals():
+                    save_checkpoint(
+                        train_dir / "crash.pth",
+                        model=locals()["model"],
+                        criterion=locals()["criterion"],
+                        optimizer=locals()["optimizer"],
+                        scheduler=locals().get("scheduler", None),
+                        epoch=locals().get("epoch", 0),
+                        best_psnr=locals().get("best_psnr", 0.0),
+                        best_val_loss=locals().get("best_val_loss", float("inf")),
+                        no_improve_count=locals().get("no_improve_count", 0),
+                        cfg=locals().get("cfg", {}),
+                        extra={
+                            "tag": "crash",
+                            "exception": repr(e),
+                            "traceback": traceback.format_exc(),
+                        },
+                    )
+                    logger.info(f"Saved crash checkpoint to: {train_dir / 'crash.pth'}")
+            except Exception:
+                logger.exception("Failed to save crash checkpoint.")
+        raise
+    finally:
+        cleanup_ddp()
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ class UnrolledDeblurNet(nn.Module):
         pad_border: int = 32,
         denoiser_kwargs: dict | None = None,
         schedule_kwargs: dict | None = None,
+        beta_kwargs: dict | None = None,
         beta_mode: str = "geom",
     ):
         super().__init__()
@@ -70,7 +71,7 @@ class UnrolledDeblurNet(nn.Module):
 
         # self.log_betas = nn.Parameter(torch.zeros(T))
         self.beta_schedule = build_beta_schedule(
-            name=beta_mode, T=T, beta_min=0.5, beta_max=64.0, scale_by="inv_sigma2"
+            name=beta_mode, T=T, **(beta_kwargs or {}),
         )
 
     @torch.no_grad()

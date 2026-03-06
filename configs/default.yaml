@@ -21,6 +21,7 @@ model:
   T: 10                         # number of unrolling stages
   solver: "hqs"                # "hqs" | "admm" | "pg"
   denoiser: "dncnn"            # "dncnn" | "unet_small" | "resblock"
+  checkpoint: null
   denoiser_kwargs:
     mid_channels: 64
     depth: 6                   # DnCNN conv layers
@@ -32,6 +33,12 @@ model:
     r: 0.8
     p: 2.0
     front_heavy: true
+  beta_kwargs:
+    beta: 8
+    beta_min: 0.5
+    beta_max: 64.0
+    p: 2.0
+    scale_by: "none"
   share_denoisers: false
   inner_iters: 3
   in_channels: 3

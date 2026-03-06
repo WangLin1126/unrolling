@@ -193,7 +193,6 @@ def build_beta_schedule(
     beta_min: float = 0.5,
     beta_max: float = 64.0,
     p: float = 2.0,
-    decreasing: bool = False,
     scale_by: str = "none",
 ):
     """
