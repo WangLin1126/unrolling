@@ -62,8 +62,9 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
     else:
         depth_val = "NA"
         hidden_val = "NA"
-
+    fh = "front_light-" if not mc["schedule_kwargs"]["front_heavy"] else ""
     params = (
+        f"{fh}"
         f"T_{mc['T']}"
         f"-solver_{mc['solver']}"
         f"-denoiser_{denoiser}"
@@ -532,6 +533,7 @@ def main():
             base_loss=base_loss,
             learnable=mc.get("learnable_loss_weights", False),
             mode=tc.get("loss_mode", "all"),
+            blur_total_sigma=float(dc["blur"]["sigma_list"].strip())
         ).to(device)
 
         if use_ddp:
@@ -816,20 +818,25 @@ def main():
         # ── Auto test ───────────────────────────────────────────
         if use_ddp:
             dist.barrier()
+            
+        should_run_test = tc.get("run_test_after_train", True) and is_main_process()
+        best_ckpt = train_dir / "best.pth"
 
-        if tc.get("run_test_after_train", True) and is_main_process():
-            best_ckpt = train_dir / "best.pth"
+        # 在测试前先退出 DDP，避免其他 rank 在 barrier/collective 中等待超时
+        cleanup_ddp()
+
+        if should_run_test:
             if best_ckpt.exists():
                 logger.info("=" * 50)
                 logger.info("Running test...")
                 logger.info("=" * 50)
+
                 from evaluate import run_evaluate
                 run_evaluate(cfg, str(best_ckpt), str(test_dir))
             else:
                 logger.warning("Skip test because best.pth does not exist.")
 
-        if use_ddp:
-            dist.barrier()
+        return
 
     except Exception as e:
         if logger is None:

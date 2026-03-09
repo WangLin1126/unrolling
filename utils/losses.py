@@ -3,8 +3,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-
+import math
+from typing import Sequence
+from models.fft_ops import gaussian_otf, fft_conv2d_circular
 # ── Base losses ─────────────────────────────────────────────────────
 
 class CharbonnierLoss(nn.Module):
@@ -102,7 +103,9 @@ class StagewiseLoss(nn.Module):
     def __init__(self, T: int, 
                  base_loss: nn.Module, 
                  learnable: bool = False,
-                 mode: str = "all"
+                 mode: str = "all",
+                blur_total_sigma: float = 4.0,
+                blur_sigma_list=None,
                  ):
         super().__init__()
         self.T = T
@@ -113,11 +116,29 @@ class StagewiseLoss(nn.Module):
             self.logits = nn.Parameter(torch.zeros(T))
         else:
             self.register_buffer("logits", torch.zeros(T))
+        if blur_sigma_list is None or blur_sigma_list == "":
+            if blur_total_sigma > 0:
+                self.blur_sigmas = [
+                    blur_total_sigma * math.sqrt(k / T)
+                    for k in range(T - 1, -1, -1)
+                ]
+            else:
+                self.blur_sigmas = [0.0] * T
+        else:
+            if isinstance(blur_sigma_list, str):
+                self.blur_sigmas = [float(x) for x in blur_sigma_list.split(",") if x.strip()]
+            else:
+                self.blur_sigmas = [float(x) for x in blur_sigma_list]
 
+            if len(self.blur_sigmas) != T:
+                raise ValueError(
+                    f"blur_sigma_list must have length T={T}, but got {len(self.blur_sigmas)}"
+                )
     @property
     def weights(self) -> torch.Tensor:
         """(T,) weights that sum to 1."""
         return torch.softmax(self.logits, dim=0)
+
 
     def forward(
         self,
@@ -143,6 +164,31 @@ class StagewiseLoss(nn.Module):
                 l_t = self.base_loss(stage_outputs[t], stage_targets[t])
             elif self.mode == "one_stage":
                 l_t = self.T * self.base_loss(stage_outputs[t], stage_targets[t]) if t == self.T-1 else torch.zeros((), device=stage_outputs[t].device)
+            elif self.mode == "blur_last":
+                # pointwise L1 loss map: (B,C,H,W)
+                loss_map = (stage_outputs[t] - stage_targets[-1]).abs()
+                sigma = self.blur_sigmas[t]
+                if sigma > 1e-12:
+                    B, C, H, W = loss_map.shape
+                    p = max(1, int(math.ceil(3.0 * sigma)))
+                    # reflect-pad -> FFT blur -> crop back
+                    loss_pad = F.pad(loss_map, (p, p, p, p), mode="reflect")
+                    Hp, Wp = H + 2 * p, W + 2 * p
+                    otf = gaussian_otf(
+                        sigma,
+                        Hp,
+                        Wp,
+                        device=loss_map.device,
+                        dtype=loss_map.dtype,
+                    )
+                    loss_pad = fft_conv2d_circular(loss_pad, otf)
+                    loss_map = loss_pad[:, :, p:p+H, p:p+W]
+
+                # l_t = self.base_loss(loss_map, torch.zeros_like(loss_map))
+                l_t = loss_map.mean()
+
+            else:
+                raise ValueError(f"Unknown StagewiseLoss mode: {self.mode}")
             total = total + w[t] * l_t
             per_stage.append(l_t.item())
 

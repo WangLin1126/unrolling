@@ -9,7 +9,7 @@ from .resblock import ResBlockDenoiser
 
 DENOISER_REGISTRY: dict[str, type] = {
     "dncnn": DnCNN,
-    "unet_small": SmallUNet,
+    "unet": SmallUNet,
     "resblock": ResBlockDenoiser,
 }
 

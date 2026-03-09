@@ -16,7 +16,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-
+import time
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -276,7 +276,8 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         )
 
     # ── Evaluate ────────────────────────────────────────────────
-    num_vis = tc.get("num_vis_stages", 5)
+    # num_vis = tc.get("num_vis_stages", 5)
+    num_vis = 6
     save_images = tc.get("save_images", True)
 
     psnr_list, ssim_list = [], []
@@ -390,6 +391,8 @@ def main():
         action="store_true",
         help="Prefer config stored inside checkpoint when available.",
     )
+    parser.add_argument("--test.batch_size", dest="test_batch_size", type=int, default=None)
+    parser.add_argument("--test.num_workers", dest="test_num_workers", type=int, default=None)
     args = parser.parse_args()
 
     cfg = load_yaml_config(args.config)

@@ -6,12 +6,10 @@ CONFIG="configs/default.yaml"
 export CUDA_VISIBLE_DEVICES=0
 
 TEST_BATCH_SIZE=8
-TEST_NUM_WORKERS=4
+TEST_NUM_WORKERS=8
 
 CHECKPOINTS=(
-"/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/results/exp1/train/best.pth"
-"/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/results/exp2/train/ckpt_e30.pth"
-# "/path/to/another/train/best.pth"
+/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/results/DIV2K/front_light-T_5-solver_hqs-denoiser_dncnn-depth_15-hidden_64-inner_1-sigma_geom-beta_geom-lossw_uniform-lmode_last/20260306_203636/train/best.pth
 )
 
 for CKPT in "${CHECKPOINTS[@]}"; do

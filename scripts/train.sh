@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ── Runtime / DDP ───────────────────────────────────────────────
-GPUS="0,1"
+GPUS="0,1,2,3"
 IFS=',' read -ra GPU_ARR <<< "${GPUS}"
 NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
@@ -24,15 +24,16 @@ TS=(5)
 # hqs | admm | pg
 SOLVERS=("hqs")
 # geom | power | uniform | trainable
-SIGMA_SCHEDULES=("geom")
+SIGMA_SCHEDULES=("uniform")
+FRONT_HEAVY=true
 # dncnn | unet | resblock
-DENOISERS=("dncnn")
+DENOISERS=("unet")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
 # denoiser architecture
 MID_CHANNELS=64
-DEPTH=5
+DEPTH=15
 BASE_CH=32
 NUM_LEVELS=2
 NUM_BLOCKS=5
@@ -40,13 +41,13 @@ NUM_BLOCKS=5
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
 # all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("all" "last" "one_stage")
+LOSS_MODES=("all")
 # constant | geom | geom_inc | geom_dec | delta_power | delta_interp
-BETA_MODE="constant"
+BETA_MODES=("constant")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=24
+BATCH_SIZE_PER_GPU=32
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
@@ -62,10 +63,10 @@ RUN_TEST_AFTER=true
 USE_COMPILE=false
 
 # ── Testing ─────────────────────────────────────────────────────
-TEST_BATCH_SIZE=8
+TEST_BATCH_SIZE=1
 TEST_NUM_WORKERS=4
 SAVE_IMAGES=true
-NUM_VIS_STAGES=5
+NUM_VIS_STAGES=6
 
 for T in "${TS[@]}"; do
 for SOLVER in "${SOLVERS[@]}"; do
@@ -74,7 +75,7 @@ for DENOISER in "${DENOISERS[@]}"; do
 for INNER_ITER in "${INNER_ITERS[@]}"; do
 for LEARNABLE_LOSS_WEIGHT in "${LEARNABLE_LOSS_WEIGHTS[@]}"; do
 for LOSS_MODE in "${LOSS_MODES[@]}"; do
-
+for BETA_MODE in "${BETA_MODES[@]}"; do
 torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --data.train_glob "${TRAIN_GLOB}" \
     --data.test_glob "${TEST_GLOB}" \
@@ -96,6 +97,7 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --model.denoiser_kwargs.num_levels "${NUM_LEVELS}" \
     --model.denoiser_kwargs.num_blocks "${NUM_BLOCKS}" \
     --model.learnable_loss_weights "${LEARNABLE_LOSS_WEIGHT}" \
+    --model.schedule_kwargs.front_heavy "${FRONT_HEAVY}" \
     --model.beta_mode "${BETA_MODE}" \
     --model.beta_kwargs.p 2 \
     --train.epochs "${EPOCHS}" \
@@ -126,6 +128,8 @@ done
 done
 done
 done
+done
+
 
 echo ""
 echo "Done."

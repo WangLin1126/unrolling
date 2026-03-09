@@ -1,4 +1,5 @@
-"""Sigma decomposition schedules.
+"""
+Sigma decomposition schedules.
 
 Given total blur σ and T stages, produce {δ_t} such that Σ δ_t² = σ².
 """
@@ -10,7 +11,7 @@ import torch.nn as nn
 
 _EPS = 1e-12
 class UniformSchedule(nn.Module):
-    def __init__(self, T: int, **kwargs):
+    def __init__(self, T: int):
         super().__init__()
         self.T = T
 
@@ -22,7 +23,7 @@ class UniformSchedule(nn.Module):
 class TrainableSchedule(nn.Module):
     """Learnable decomposition: α_t = softmax(w)_t, δ_t = σ·√α_t."""
 
-    def __init__(self, T: int, init: str = "uniform", **kwargs):
+    def __init__(self, T: int, init: str = "uniform"):
         super().__init__()
         self.T = T
         if init == "uniform":
@@ -43,7 +44,7 @@ class GeomSchedule(nn.Module):
     alpha_t ∝ r^(T-1-t)  (dec=True, front-heavy)
     delta_t = sigma * sqrt(alpha_t)
     """
-    def __init__(self, T: int, r: float = 0.8, front_heavy: bool = True, **kwargs):
+    def __init__(self, T: int, r: float = 0.8, front_heavy: bool = True):
         super().__init__()
         self.T = T
         self.r = float(r)
@@ -65,7 +66,7 @@ class PowerSchedule(nn.Module):
     alpha_t ∝ (T-t)^p  (front_heavy=True)
     delta_t = sigma * sqrt(alpha_t)
     """
-    def __init__(self, T: int, p: float = 2.0, front_heavy: bool = True, **kwargs):
+    def __init__(self, T: int, p: float = 2.0, front_heavy: bool = True):
         super().__init__()
         self.T = T
         self.p = float(p)
@@ -81,18 +82,32 @@ class PowerSchedule(nn.Module):
         alpha = w / (w.sum() + 1e-12)
         return sigma * torch.sqrt(alpha)
 
-SCHEDULE_REGISTRY: dict[str, type] = {
-    "uniform": UniformSchedule,
-    "trainable": TrainableSchedule,
-    "geom": GeomSchedule,
-    "power": PowerSchedule,
-}
+def build_schedule(
+    name: str,
+    T: int,
+    init: str = "uniform",
+    r: float = 0.8,
+    p: float = 2.0,
+    front_heavy: bool = True,
+):
+    """
+    name:
+      - "uniform"
+      - "trainable"
+      - "geom"
+      - "power"
+    """
+    name = name.lower()
+    if name == "uniform":
+        return UniformSchedule(T=T)
+    if name == "trainable":
+        return TrainableSchedule(T=T, init=init)
+    if name == "geom":
+        return GeomSchedule(T=T, r=r, front_heavy=front_heavy)
+    if name == "power":
+        return PowerSchedule(T=T, p=p, front_heavy=front_heavy)
 
-
-def build_schedule(name: str, T: int, **kwargs) -> nn.Module:
-    if name not in SCHEDULE_REGISTRY:
-        raise ValueError(f"Unknown schedule '{name}'. Choose from {list(SCHEDULE_REGISTRY)}")
-    return SCHEDULE_REGISTRY[name](T=T, **kwargs)
+    raise ValueError(f"Unknown schedule '{name}'")
 
 def _maybe_scale_by_noise(base: torch.Tensor, sigma: torch.Tensor, scale_by: str):
     """
