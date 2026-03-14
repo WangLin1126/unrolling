@@ -232,8 +232,8 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         blur_cfg,
         pad_border=pad_border,
         T=mc["T"],
-        sigma_schedule_name=mc.get("sigma_schedule"),
-        sigma_schedule_kwargs=mc.get("schedule_kwargs", {}),
+        blur_sigma_schedule_name=mc.get("blur_sigma_schedule", "uniform"),
+        blur_sigma_schedule_kwargs=mc.get("blur_sigma_schedule_kwargs", {}),
     )
 
     logger.info(f"[TEST] {len(test_ds)} images from '{test_glob}', pad_border={pad_border}")
@@ -251,18 +251,18 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
     model = UnrolledDeblurNet(
         T=mc["T"],
         solver_name=mc["solver"],
-        schedule_name=mc["sigma_schedule"],
+        blur_sigma_schedule=mc.get("blur_sigma_schedule", "uniform"),
         denoiser_name=mc["denoiser"],
         share_denoisers=mc["share_denoisers"],
         inner_iters=mc["inner_iters"],
         in_channels=mc["in_channels"],
         pad_border=pad_border,
         denoiser_kwargs=mc.get("denoiser_kwargs", {}),
-        schedule_kwargs=mc.get("schedule_kwargs", {}),
-        beta_mode=mc.get("beta_mode", "geom"),
+        blur_sigma_schedule_kwargs=mc.get("blur_sigma_schedule_kwargs", {}),
+        beta_schedule=mc.get("beta_schedule", "geom"),
         beta_kwargs=mc.get("beta_kwargs", {}),
-        noise_sigma_mode = mc.get("noise_sigma_mode", "loguniform"),
-        noise_sigma_kwargs = mc.get("noise_sigma_kwargs", {}),
+        noise_sigma_schedule=mc.get("noise_sigma_schedule", "loguniform"),
+        noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
     ).to(device)
 
     state_dict, raw_ckpt = load_checkpoint_for_test(checkpoint_path, device)

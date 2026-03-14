@@ -48,18 +48,18 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
     dataset_name = dc.get("dataset_name", "DIV2K")
     denoiser = mc["denoiser"]
     dk = mc["denoiser_kwargs"][denoiser]
-    fh = "front_light-" if not mc["schedule_kwargs"]["front_heavy"] else ""
+    fh = "front_light-" if not mc.get("blur_sigma_schedule_kwargs", {}).get("front_heavy", True) else ""
     params = (
         f"{fh}"
         f"T{mc['T']}"
         f"-{mc['solver']}"
         f"-{denoiser}"
         f"-inner{mc.get('inner_iters', 1)}"
-        f"-blur_sigma_{mc['sigma_schedule']}_{dc['blur']['sigma_list']}"
+        f"-blur_sigma_{mc.get('blur_sigma_schedule', 'uniform')}_{dc['blur']['sigma_list']}"
         f"-noise_sigma_{dc['blur']['noise_sigma_min']}_{dc['blur']['noise_sigma_max']}"
-        f"-beta_{mc.get('beta_mode', 'geom')}"
+        f"-beta_{mc.get('beta_schedule', 'geom')}"
         f"-lossw_{'learn' if mc.get('learnable_loss_weights') else 'uniform'}"
-        f"-lmode_{tc.get('loss_mode')}"
+        f"-lmode_{tc.get('loss_mode', 'all')}"
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -458,8 +458,8 @@ def main():
             blur_cfg,
             pad_border=pad_border,
             T=T,
-            sigma_schedule_name=mc.get("sigma_schedule", "uniform"),
-            sigma_schedule_kwargs=mc.get("schedule_kwargs", {}),
+            blur_sigma_schedule_name=mc.get("blur_sigma_schedule", "uniform"),
+            blur_sigma_schedule_kwargs=mc.get("blur_sigma_schedule_kwargs", {}),
         )
 
         val_ratio = dc.get("val_ratio", 0.1)
@@ -495,22 +495,21 @@ def main():
             logger.info(f"Config summary: T={T}, pad_border={pad_border}, precomputed targets on CPU")
 
         # ── Model ───────────────────────────────────────────────
-        schedule_name = mc.get("sigma_schedule", "uniform")
         model = UnrolledDeblurNet(
             T=T,
             solver_name=mc["solver"],
-            schedule_name=schedule_name,
+            blur_sigma_schedule=mc.get("blur_sigma_schedule", "uniform"),
             denoiser_name=mc["denoiser"],
             share_denoisers=mc["share_denoisers"],
             inner_iters=mc["inner_iters"],
             in_channels=mc["in_channels"],
             pad_border=pad_border,
             denoiser_kwargs=mc.get("denoiser_kwargs", {}),
-            schedule_kwargs=mc.get("schedule_kwargs", {}),
-            beta_mode=mc.get("beta_mode", "geom"),
+            blur_sigma_schedule_kwargs=mc.get("blur_sigma_schedule_kwargs", {}),
+            beta_schedule=mc.get("beta_schedule", "geom"),
             beta_kwargs=mc.get("beta_kwargs", {}),
-            noise_sigma_mode = mc.get("noise_sigma_mode", "loguniform"),
-            noise_sigma_kwargs = mc.get("noise_sigma_kwargs", {}),
+            noise_sigma_schedule=mc.get("noise_sigma_schedule", "loguniform"),
+            noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
         ).to(device)
 
         if tc.get("use_compile", False):
@@ -568,7 +567,7 @@ def main():
         best_val_loss = float("inf")
         patience = tc.get("early_stop_patience", 0)
         no_improve_count = 0
-        use_precomputed = (schedule_name != "trainable")
+        use_precomputed = (mc.get("blur_sigma_schedule", "uniform") != "trainable")
 
         if resume_ckpt is not None:
             ckpt = load_checkpoint(
@@ -614,16 +613,16 @@ def main():
             train_loss_sum_local = 0.0
             train_count_local = 0
 
-            for step, (blur, sharp, sigmas, noise_sigmas, targets) in enumerate(train_loader, 1):
+            for step, (blur, sharp, blur_sigmas, noise_sigmas, targets) in enumerate(train_loader, 1):
                 blur = blur.to(device, non_blocking=True)
                 sharp = sharp.to(device, non_blocking=True)
-                sigmas = sigmas.to(device, non_blocking=True)
+                blur_sigmas = blur_sigmas.to(device, non_blocking=True)
 
                 if use_precomputed:
                     targets_gpu = [t.to(device, non_blocking=True) for t in targets]
-                    result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = None, precomputed_targets = targets_gpu)
+                    result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
                 else:
-                    result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = sharp, precomputed_targets = None)
+                    result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
 
                 loss, info = criterion(result["stage_outputs"], result["stage_targets"])
 
@@ -694,16 +693,16 @@ def main():
                 val_count_local = 0.0
 
                 with torch.no_grad():
-                    for blur, sharp, sigmas, noise_sigmas, targets in val_loader:
+                    for blur, sharp, blur_sigmas, noise_sigmas, targets in val_loader:
                         blur = blur.to(device, non_blocking=True)
                         sharp = sharp.to(device, non_blocking=True)
-                        sigmas = sigmas.to(device, non_blocking=True)
+                        blur_sigmas = blur_sigmas.to(device, non_blocking=True)
                         noise_sigmas = noise_sigmas.to(device, non_blocking=True)
                         if use_precomputed:
                             targets_gpu = [t.to(device, non_blocking=True) for t in targets]
-                            result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = None, precomputed_targets = targets_gpu)
+                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
                         else:
-                            result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = sharp, precomputed_targets = None)
+                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
 
                         loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
                         val_loss_sum_local += loss_v.item() * blur.shape[0]
