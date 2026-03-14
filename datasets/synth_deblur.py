@@ -3,10 +3,10 @@
 Pipeline per image:
     1. Load full image x  (H, W)
     2. Reflect-pad → FFT blur with total sigma → crop → y (artifact-free)
-    3. Compute T intermediate targets via uniform delta decomposition:
+    3. Compute T intermediate targets via blur sigma decomposition:
        targets[0] = x_gt (crop of padded),  targets[t] = blur(targets[t-1], δ_t)
        Each target is cropped to (H, W) immediately.
-    4. Return blur, sharp, sigma, and list of T+1 targets on CPU
+    4. Return blur, sharp, blur_sigma, noise_sigma, and list of T+1 targets on CPU
 
 Targets are precomputed on CPU so the model forward() never needs
 _compute_targets on GPU — saving both time and memory.
@@ -28,8 +28,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
 
-from models.fft_ops import gaussian_otf, fft_conv2d_circular
-from models.schedule import build_schedule
+from models.fft_ops import gaussian_otf, fft_conv2d_circular, precompute_freq_sq
+from models.schedule import build_blur_sigma_schedule
 
 def _parse_list(s: str):
     return [float(x) for x in s.split(",") if x.strip()]
@@ -53,16 +53,18 @@ class SyntheticNonBlindDeblur(Dataset):
         cfg:         BlurConfig
         pad_border:  reflect-pad pixels before FFT (same as model)
         T:           number of unrolling stages (for precomputing targets)
+        blur_sigma_schedule_name: schedule type for blur sigma decomposition
+        blur_sigma_schedule_kwargs: kwargs for the schedule
     """
 
     def __init__(
-        self, 
-        image_glob: str, 
+        self,
+        image_glob: str,
         cfg: BlurConfig = BlurConfig(),
-        pad_border: int = 32, 
+        pad_border: int = 32,
         T: int = 5,
-        sigma_schedule_name: str = "uniform",
-        sigma_schedule_kwargs: dict | None = None
+        blur_sigma_schedule_name: str = "uniform",
+        blur_sigma_schedule_kwargs: dict | None = None,
         ):
         self.paths = sorted(glob.glob(image_glob))
         assert len(self.paths) > 0, f"No images found for {image_glob}"
@@ -70,7 +72,10 @@ class SyntheticNonBlindDeblur(Dataset):
         self.pad_border = pad_border
         self.T = T
         self._sigma_candidates = _parse_list(cfg.sigma_list) if cfg.sigma_list else None
-        self.sigma_schedule = build_schedule(sigma_schedule_name, T=T, **(sigma_schedule_kwargs or {}))
+        self.blur_sigma_schedule = build_blur_sigma_schedule(
+            blur_sigma_schedule_name, T=T, **(blur_sigma_schedule_kwargs or {}),
+        )
+
     def __len__(self):
         return len(self.paths)
 
@@ -80,10 +85,8 @@ class SyntheticNonBlindDeblur(Dataset):
         return random.uniform(self.cfg.sigma_min, self.cfg.sigma_max)
 
     @torch.no_grad()
-    def _compute_targets_cpu(self, x_pad, sigma, H, W, p):
+    def _compute_targets_cpu(self, x_pad, blur_sigma, H, W, p):
         """Compute T+1 intermediate targets on CPU, cropped to (H, W).
-
-        Uses uniform schedule: δ_t = σ / √T for all t.
 
         Returns:
             list of T+1 tensors, each (C, H, W):
@@ -91,14 +94,16 @@ class SyntheticNonBlindDeblur(Dataset):
                 targets[t] = g_{δ_t} * targets[t-1]  (progressively blurred)
         """
         Hp, Wp = x_pad.shape[-2:]
-        # delta = sigma / math.sqrt(self.T)
-        sigma_tensor = torch.tensor(sigma, device=x_pad.device, dtype=x_pad.dtype)
-        sigmas = self.sigma_schedule(sigma_tensor)  # (T,) tensor
+        sigma_tensor = torch.tensor(blur_sigma, device=x_pad.device, dtype=x_pad.dtype)
+        blur_sigma_deltas = self.blur_sigma_schedule(sigma_tensor)  # (T,)
+        freq_sq = precompute_freq_sq(Hp, Wp, x_pad.device, x_pad.dtype)
+
         targets = [x_pad[:, :, p:p+H, p:p+W].squeeze(0)]  # targets[0] = clean
         current = x_pad
         for t in range(self.T):
-            delta_t = float(sigmas[t].item())
-            otf_t = gaussian_otf(delta_t, Hp, Wp, device=current.device, dtype=current.dtype)
+            otf_t = gaussian_otf(blur_sigma_deltas[t], Hp, Wp,
+                                 device=current.device, dtype=current.dtype,
+                                 freq_sq=freq_sq)
             current = fft_conv2d_circular(current, otf_t)
             targets.append(current[:, :, p:p+H, p:p+W].squeeze(0))
         return targets  # list of T+1 tensors, each (C, H, W)

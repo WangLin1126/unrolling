@@ -20,7 +20,7 @@ data:
 model:
   T: 10                         # number of unrolling stages
   solver: "hqs"                # "hqs" | "admm" | "pg"
-  denoiser: "dncnn"            # "dncnn" | "unet_small" | "resblock" | "drunet"
+  denoiser: "dncnn"            # "dncnn" | "unet" | "resblock" | "drunet"
   checkpoint: null
   denoiser_kwargs:
     dncnn:
@@ -33,25 +33,28 @@ model:
       num_blocks: 5              # ResBlock count
     drunet:
       mid_channels: 32
-      num_blocks: 3 
+      num_blocks: 3
       residual: false
 
-  schedule_kwargs:
+  blur_sigma_schedule: "uniform"   # "uniform" | "trainable" | "geom" | "power"
+  blur_sigma_schedule_kwargs:
     init: "uniform"
     r: 0.8
     p: 2.0
     front_heavy: true
+
+  beta_schedule: "geom"           # "constant" | "geom" | "geom_dec" | "dpir"
   beta_kwargs:
     beta: 8
     beta_min: 0.5
     beta_max: 64.0
-    p: 2.0
     lam: 0.23
-    scale_by: "none"
-  noise_sigma_mode: "loguniform"
-  noise_sigma_kwargs:
+
+  noise_sigma_schedule: "loguniform"
+  noise_sigma_schedule_kwargs:
     max_ratio: 1.5
     min_ratio: 0.1
+
   share_denoisers: false
   inner_iters: 1
   in_channels: 3
@@ -65,7 +68,7 @@ loss:
     weight: 1.0
   - name: "ssim"
     weight: 0.2
-    
+
 # Training
 train:
   epochs: 200
@@ -83,6 +86,7 @@ train:
   early_stop_patience: 20
   run_test_after_train: true
   gpus: "0"                     # e.g. "0,1,2,3"
+  loss_mode: "all"              # "all" | "last" | "one_stage" | "blur_last"
 
 # Testing
 test:
