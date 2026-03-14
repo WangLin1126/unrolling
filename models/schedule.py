@@ -148,7 +148,11 @@ def _maybe_scale_by_noise(base: torch.Tensor, sigma: torch.Tensor, scale_by: str
     """
     base: (T,) or (B, T)
     sigma: scalar or (B,) tensor
+    Returns: (B, T) when sigma is (B,), else (T,)
     """
+    # Ensure base is broadcast to (B, T) when sigma is batched
+    if sigma.dim() >= 1 and base.dim() == 1:
+        base = base.unsqueeze(0).expand(sigma.shape[0], -1)  # (T,) → (B, T)
     if scale_by == "none":
         return base
     # sigma (B,) → (B, 1) for broadcasting with (..., T)
