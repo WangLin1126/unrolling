@@ -8,6 +8,10 @@ from ..denoisers import apply_denoiser
 class PGSolver(BaseSolver):
     def step(self, x_t, denoiser, otf, beta, inner_iters=1, noise_sigma = None):
         eta = beta
+        # Reshape eta for broadcasting with (B, C, H, W) if batched
+        if isinstance(eta, torch.Tensor) and eta.dim() >= 1:
+            while eta.dim() < 4:
+                eta = eta.unsqueeze(-1)
         otf_c = otf.unsqueeze(1) if otf.dim() == 3 else otf
         otf_conj = otf_c.conj()
         u = x_t

@@ -2,6 +2,10 @@
 Sigma decomposition schedules.
 
 Given total blur σ and T stages, produce {δ_t} such that Σ δ_t² = σ².
+
+All schedules accept sigma as scalar (0-dim) or batched (B,) tensor.
+  - scalar sigma  → output shape (T,)
+  - batched sigma → output shape (B, T)
 """
 
 from __future__ import annotations
@@ -17,7 +21,8 @@ class UniformSchedule(nn.Module):
 
     def forward(self, sigma: torch.Tensor = 1.0) -> torch.Tensor:
         delta = sigma / math.sqrt(self.T)
-        return delta.expand(self.T)
+        # (B,) → (B, T) ; scalar → (T,)
+        return delta.unsqueeze(-1).expand(*delta.shape, self.T)
 
 
 class TrainableSchedule(nn.Module):
@@ -36,8 +41,9 @@ class TrainableSchedule(nn.Module):
             raise ValueError(f"Unknown init: {init}")
 
     def forward(self, sigma: torch.Tensor = 1.0) -> torch.Tensor:
-        alpha = torch.softmax(self.logits, dim=0)
-        return sigma * torch.sqrt(alpha)
+        alpha = torch.softmax(self.logits, dim=0)  # (T,)
+        # sigma (B,) → (B,1) * (T,) → (B, T) ; scalar → (T,)
+        return sigma.unsqueeze(-1) * torch.sqrt(alpha)
 
 class GeomSchedule(nn.Module):
     """
@@ -57,8 +63,9 @@ class GeomSchedule(nn.Module):
             w = (self.r ** t)
         else:
             w = (self.r ** (self.T - 1 - t))
-        alpha = w / (w.sum() + _EPS)
-        return sigma * torch.sqrt(alpha)
+        alpha = w / (w.sum() + _EPS)  # (T,)
+        # sigma (B,) → (B,1) * (T,) → (B, T) ; scalar → (T,)
+        return sigma.unsqueeze(-1) * torch.sqrt(alpha)
 
 
 class PowerSchedule(nn.Module):
@@ -79,8 +86,9 @@ class PowerSchedule(nn.Module):
             w = (self.T - t) ** self.p
         else:
             w = (t + 1) ** self.p
-        alpha = w / (w.sum() + 1e-12)
-        return sigma * torch.sqrt(alpha)
+        alpha = w / (w.sum() + 1e-12)  # (T,)
+        # sigma (B,) → (B,1) * (T,) → (B, T) ; scalar → (T,)
+        return sigma.unsqueeze(-1) * torch.sqrt(alpha)
 
 class LogUniformSchedule(nn.Module):
     def __init__(self, T, max_ratio, min_ratio):
@@ -97,12 +105,13 @@ class LogUniformSchedule(nn.Module):
         sigma_min = noise_sigma * self.min_ratio
 
         if self.T == 1:
-            return sigma_max.unsqueeze(0)
+            # scalar → (1,) ; (B,) → (B, 1)
+            return sigma_max.unsqueeze(-1)
 
-        t = torch.arange(self.T, device=device, dtype=dtype)
-        return sigma_max.unsqueeze(0) * (
-            sigma_min / sigma_max
-        ).unsqueeze(0) ** (t / (self.T - 1))
+        t = torch.arange(self.T, device=device, dtype=dtype)  # (T,)
+        ratio = (sigma_min / sigma_max)  # scalar or (B,)
+        # sigma_max (B,) → (B,1) * (T,) → (B, T) ; scalar → (T,)
+        return sigma_max.unsqueeze(-1) * ratio.unsqueeze(-1) ** (t / (self.T - 1))
     
 def build_schedule(
     name: str,
@@ -135,29 +144,19 @@ def build_schedule(
 
     raise ValueError(f"Unknown schedule '{name}'")
 
-class DpirBetaSchedule(nn.Module):
-    """DPIR regularization schedule: alpha_t = lambda * sigma^2 / sigma_t^2."""
-
-    def __init__(self, T: int, lam: float = 0.23):
-        super().__init__()
-        self.T = T
-        self.lam = float(lam)
-
-    def forward(self, sigma: torch.Tensor, deltas: torch.Tensor | None = None):
-        assert deltas is not None, "DpirBetaSchedule requires sigma_t (T,)"
-        return self.lam * (sigma * sigma) / (deltas * deltas + _EPS)
-    
 def _maybe_scale_by_noise(base: torch.Tensor, sigma: torch.Tensor, scale_by: str):
     """
-    base: (T,)
-    sigma: scalar tensor
+    base: (T,) or (B, T)
+    sigma: scalar or (B,) tensor
     """
     if scale_by == "none":
         return base
+    # sigma (B,) → (B, 1) for broadcasting with (..., T)
+    s = sigma.unsqueeze(-1) if sigma.dim() >= 1 else sigma
     if scale_by == "sigma2":
-        return base * (sigma * sigma)
+        return base * (s * s)
     if scale_by == "inv_sigma2":
-        return base / (sigma * sigma + _EPS)
+        return base / (s * s + _EPS)
     raise ValueError(f"Unknown scale_by: {scale_by}")
 
 class ConstantBetaSchedule(nn.Module):
@@ -169,6 +168,7 @@ class ConstantBetaSchedule(nn.Module):
 
     def forward(self, sigma: torch.Tensor, deltas: torch.Tensor | None = None):
         base = torch.full((self.T,), self.beta, device=sigma.device, dtype=sigma.dtype)
+        # base (T,) will broadcast with sigma (B,) → (B,1) in _maybe_scale_by_noise
         return _maybe_scale_by_noise(base, sigma, self.scale_by)
 
 class GeomBetaSchedule(nn.Module):
@@ -210,9 +210,9 @@ class DeltaPowerBetaSchedule(nn.Module):
         self.scale_by = scale_by
 
     def forward(self, sigma: torch.Tensor, deltas: torch.Tensor | None = None):
-        assert deltas is not None, "DeltaPowerBetaSchedule requires deltas (T,)"
-        # normalize by min delta
-        dmin = torch.min(deltas).clamp_min(_EPS)
+        assert deltas is not None, "DeltaPowerBetaSchedule requires deltas"
+        # deltas: (T,) or (B, T) — min along last dim
+        dmin = deltas.min(dim=-1, keepdim=True).values.clamp_min(_EPS)
         base = self.beta_min * (deltas / dmin).clamp_min(_EPS) ** self.p
         base = torch.clamp(base, min=self.beta_min, max=self.beta_max)
         return _maybe_scale_by_noise(base.to(sigma.dtype), sigma, self.scale_by)
@@ -232,9 +232,10 @@ class DeltaInterpBetaSchedule(nn.Module):
         self.scale_by = scale_by
 
     def forward(self, sigma: torch.Tensor, deltas: torch.Tensor | None = None):
-        assert deltas is not None, "DeltaInterpBetaSchedule requires deltas (T,)"
-        dmin = torch.min(deltas)
-        dmax = torch.max(deltas)
+        assert deltas is not None, "DeltaInterpBetaSchedule requires deltas"
+        # deltas: (T,) or (B, T) — min/max along last dim
+        dmin = deltas.min(dim=-1, keepdim=True).values
+        dmax = deltas.max(dim=-1, keepdim=True).values
         norm = (deltas - dmin) / (dmax - dmin + _EPS)
         base = self.beta_min + (self.beta_max - self.beta_min) * norm
         return _maybe_scale_by_noise(base.to(sigma.dtype), sigma, self.scale_by)
@@ -248,8 +249,9 @@ class DpirBetaSchedule(nn.Module):
         self.lam = float(lam)
 
     def forward(self, noise_sigma: torch.Tensor, noise_sigma_t: torch.Tensor | None = None):
-
-        return self.lam * (noise_sigma * noise_sigma) / (noise_sigma_t * noise_sigma_t + _EPS)
+        # noise_sigma: scalar or (B,) → unsqueeze for broadcast with (B, T) noise_sigma_t
+        ns = noise_sigma.unsqueeze(-1) if noise_sigma.dim() >= 1 else noise_sigma
+        return self.lam * (ns * ns) / (noise_sigma_t * noise_sigma_t + _EPS)
 
 def build_beta_schedule(
     name: str,

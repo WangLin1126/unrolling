@@ -54,6 +54,11 @@ def gaussian_otf(delta: torch.Tensor, H: int, W: int,
     """Compute the OTF of a 2D Gaussian with std=delta analytically.
 
     G(wx, wy) = exp(-0.5 * delta^2 * (wx^2 + wy^2))
+
+    Args:
+        delta: scalar (0-dim) or batched (B,) blur std
+    Returns:
+        (1, H, W//2+1) if scalar, (B, H, W//2+1) if batched
     """
     if not isinstance(delta, torch.Tensor):
         delta = torch.tensor(delta, device=device, dtype=dtype)
@@ -62,7 +67,13 @@ def gaussian_otf(delta: torch.Tensor, H: int, W: int,
 
     wy = torch.fft.fftfreq(H, device=device).to(dtype) * 2 * torch.pi
     wx = torch.fft.rfftfreq(W, device=device).to(dtype) * 2 * torch.pi
-    WY, WX = torch.meshgrid(wy, wx, indexing="ij")
+    WY, WX = torch.meshgrid(wy, wx, indexing="ij")  # (H, W//2+1)
 
-    otf = torch.exp(-0.5 * delta ** 2 * (WX ** 2 + WY ** 2))
-    return otf.unsqueeze(0).to(torch.complex64)
+    if delta.dim() >= 1:
+        # delta (B,) → (B, 1, 1) for broadcasting with (H, W//2+1)
+        d2 = (delta.view(-1, 1, 1)) ** 2
+        otf = torch.exp(-0.5 * d2 * (WX ** 2 + WY ** 2))  # (B, H, W//2+1)
+    else:
+        otf = torch.exp(-0.5 * delta ** 2 * (WX ** 2 + WY ** 2))
+        otf = otf.unsqueeze(0)  # (1, H, W//2+1)
+    return otf.to(torch.complex64)
