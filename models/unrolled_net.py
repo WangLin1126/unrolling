@@ -62,7 +62,8 @@ class UnrolledDeblurNet(nn.Module):
         self.noise_schedule = build_schedule(noise_sigma_mode, T=T, **(noise_sigma_kwargs or {}))
         self.solver = build_solver(solver_name)
 
-        dk = dict(in_channels=in_channels, **(denoiser_kwargs[denoiser_name] or {}))
+        denoiser_cfg = denoiser_kwargs.get(denoiser_name, {})
+        dk = dict(in_channels=in_channels, **denoiser_cfg)
         if share_denoisers:
             single = build_denoiser(denoiser_name, **dk)
             self.denoisers = nn.ModuleList([single] * T)

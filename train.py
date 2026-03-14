@@ -458,7 +458,7 @@ def main():
             blur_cfg,
             pad_border=pad_border,
             T=T,
-            sigma_schedule_name=mc.get("sigma_schedule"),
+            sigma_schedule_name=mc.get("sigma_schedule", "uniform"),
             sigma_schedule_kwargs=mc.get("schedule_kwargs", {}),
         )
 
@@ -495,7 +495,7 @@ def main():
             logger.info(f"Config summary: T={T}, pad_border={pad_border}, precomputed targets on CPU")
 
         # ── Model ───────────────────────────────────────────────
-        schedule_name = mc["sigma_schedule"]
+        schedule_name = mc.get("sigma_schedule", "uniform")
         model = UnrolledDeblurNet(
             T=T,
             solver_name=mc["solver"],
@@ -694,11 +694,11 @@ def main():
                 val_count_local = 0.0
 
                 with torch.no_grad():
-                    for blur, sharp, sigmas, targets in val_loader:
+                    for blur, sharp, sigmas, noise_sigmas, targets in val_loader:
                         blur = blur.to(device, non_blocking=True)
                         sharp = sharp.to(device, non_blocking=True)
                         sigmas = sigmas.to(device, non_blocking=True)
-
+                        noise_sigmas = noise_sigmas.to(device, non_blocking=True)
                         if use_precomputed:
                             targets_gpu = [t.to(device, non_blocking=True) for t in targets]
                             result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = None, precomputed_targets = targets_gpu)

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ── Runtime / DDP ───────────────────────────────────────────────
-GPUS="0"
+GPUS="0,1,2,3"
 IFS=',' read -ra GPU_ARR <<< "${GPUS}"
 NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
@@ -50,7 +50,7 @@ BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=3
-BATCH_SIZE_PER_GPU=8
+BATCH_SIZE_PER_GPU=20
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"

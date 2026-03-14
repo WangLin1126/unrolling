@@ -289,17 +289,17 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         for batch_idx, batch in enumerate(test_loader):
             blur = batch["blur"].to(device, non_blocking=True)
             sharp = batch["sharp"].to(device, non_blocking=True)
-            sigma = batch["sigma"]
+            blur_sigma = batch["blur_sigma"]
             noise_sigma = batch["noise_sigma"]
-            if not isinstance(sigma, torch.Tensor):
-                sigma = torch.tensor(sigma, dtype=torch.float32)
-            sigma = sigma.to(device, non_blocking=True)
+            if not isinstance(blur_sigma, torch.Tensor):
+                blur_sigma = torch.tensor(blur_sigma, dtype=torch.float32)
+            blur_sigma = blur_sigma.to(device, non_blocking=True)
 
-            if sigma.ndim > 0:
-                sigma_unique = torch.unique(sigma.detach().cpu())
+            if blur_sigma.ndim > 0:
+                sigma_unique = torch.unique(blur_sigma.detach().cpu())
                 logger.info(f"[Batch {batch_idx:04d}] sigma_unique={sigma_unique.tolist()}")
 
-            result = model(blur, sigma, noise_sigma, x_gt=None)
+            result = model(blur, blur_sigma, noise_sigma, x_gt=None)
 
             pred_batch = result["pred"]
             gt_batch = sharp
@@ -309,7 +309,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
             for b in range(batch_size_actual):
                 pred = pred_batch[b]
                 gt = gt_batch[b]
-                sigma_val = sigma[b].item() if sigma.ndim > 0 else sigma.item()
+                sigma_val = blur_sigma[b].item() if blur_sigma.ndim > 0 else blur_sigma.item()
 
                 p = calc_psnr(pred, gt)
                 s = calc_ssim(pred, gt)

@@ -51,7 +51,7 @@ model:
   noise_sigma_mode: "loguniform"
   noise_sigma_kwargs:
     max_ratio: 1.5
-    max_ratio: 0.1
+    min_ratio: 0.1
   share_denoisers: false
   inner_iters: 1
   in_channels: 3
