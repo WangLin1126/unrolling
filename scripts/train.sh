@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ── Runtime / DDP ───────────────────────────────────────────────
-GPUS="0,1,2,3"
+GPUS="0"
 IFS=',' read -ra GPU_ARR <<< "${GPUS}"
 NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
@@ -16,24 +16,27 @@ PAD_BORDER=32
 # blur generation
 SIGMA_LIST="4"
 NOISE_PROB=1.0
-NOISE_SIGMA_MIN=0.039
-NOISE_SIGMA_MAX=0.04
+NOISE_SIGMA_MIN=0.1
+NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
-TS=(5)
+CHECKPOINT=None
+TS=(10)
 # hqs | admm | pg
 SOLVERS=("hqs")
 # geom | power | uniform | trainable
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock
-DENOISERS=("unet")
+DENOISERS=("drunet")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
 # denoiser architecture
-MID_CHANNELS=64
+# DnCNN
+MID_CHANNELS=32
 DEPTH=15
+# Unet
 BASE_CH=32
 NUM_LEVELS=2
 NUM_BLOCKS=5
@@ -41,13 +44,13 @@ NUM_BLOCKS=5
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
 # all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("all")
+LOSS_MODES=("all" "last" "one_stage")
 # constant | geom | geom_inc | geom_dec | delta_power | delta_interp
-BETA_MODES=("constant")
+BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
-EPOCHS=200
-BATCH_SIZE_PER_GPU=32
+EPOCHS=3
+BATCH_SIZE_PER_GPU=8
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
@@ -91,15 +94,11 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --model.denoiser "${DENOISER}" \
     --model.share_denoisers "${SHARE_DENOISERS}" \
     --model.inner_iters "${INNER_ITER}" \
-    --model.denoiser_kwargs.mid_channels "${MID_CHANNELS}" \
-    --model.denoiser_kwargs.depth "${DEPTH}" \
-    --model.denoiser_kwargs.base_ch "${BASE_CH}" \
-    --model.denoiser_kwargs.num_levels "${NUM_LEVELS}" \
-    --model.denoiser_kwargs.num_blocks "${NUM_BLOCKS}" \
     --model.learnable_loss_weights "${LEARNABLE_LOSS_WEIGHT}" \
     --model.schedule_kwargs.front_heavy "${FRONT_HEAVY}" \
     --model.beta_mode "${BETA_MODE}" \
     --model.beta_kwargs.p 2 \
+    --model.checkpoint "${CHECKPOINT}" \
     --train.epochs "${EPOCHS}" \
     --train.batch_size "${BATCH_SIZE_PER_GPU}" \
     --train.lr "${LR}" \

@@ -82,13 +82,37 @@ class PowerSchedule(nn.Module):
         alpha = w / (w.sum() + 1e-12)
         return sigma * torch.sqrt(alpha)
 
+class LogUniformSchedule(nn.Module):
+    def __init__(self, T, max_ratio, min_ratio):
+        super().__init__()
+        self.T = T
+        self.max_ratio = max_ratio
+        self.min_ratio = min_ratio
+
+    def forward(self, noise_sigma: torch.Tensor):
+        device = noise_sigma.device
+        dtype = noise_sigma.dtype
+
+        sigma_max = noise_sigma * self.max_ratio
+        sigma_min = noise_sigma * self.min_ratio
+
+        if self.T == 1:
+            return sigma_max.unsqueeze(0)
+
+        t = torch.arange(self.T, device=device, dtype=dtype)
+        return sigma_max.unsqueeze(0) * (
+            sigma_min / sigma_max
+        ).unsqueeze(0) ** (t / (self.T - 1))
+    
 def build_schedule(
     name: str,
     T: int,
     init: str = "uniform",
     r: float = 0.8,
-    p: float = 2.0,
+    p: float = 2,
     front_heavy: bool = True,
+    max_ratio: float = 1.5, 
+    min_ratio: float = 0.1
 ):
     """
     name:
@@ -106,9 +130,23 @@ def build_schedule(
         return GeomSchedule(T=T, r=r, front_heavy=front_heavy)
     if name == "power":
         return PowerSchedule(T=T, p=p, front_heavy=front_heavy)
+    if name == "loguniform":
+        return LogUniformSchedule(T=T, max_ratio = max_ratio, min_ratio = min_ratio)
 
     raise ValueError(f"Unknown schedule '{name}'")
 
+class DpirBetaSchedule(nn.Module):
+    """DPIR regularization schedule: alpha_t = lambda * sigma^2 / sigma_t^2."""
+
+    def __init__(self, T: int, lam: float = 0.23):
+        super().__init__()
+        self.T = T
+        self.lam = float(lam)
+
+    def forward(self, sigma: torch.Tensor, deltas: torch.Tensor | None = None):
+        assert deltas is not None, "DpirBetaSchedule requires sigma_t (T,)"
+        return self.lam * (sigma * sigma) / (deltas * deltas + _EPS)
+    
 def _maybe_scale_by_noise(base: torch.Tensor, sigma: torch.Tensor, scale_by: str):
     """
     base: (T,)
@@ -201,6 +239,18 @@ class DeltaInterpBetaSchedule(nn.Module):
         base = self.beta_min + (self.beta_max - self.beta_min) * norm
         return _maybe_scale_by_noise(base.to(sigma.dtype), sigma, self.scale_by)
 
+class DpirBetaSchedule(nn.Module):
+    """DPIR regularization schedule: alpha_t = lambda * sigma^2 / sigma_t^2."""
+
+    def __init__(self, T: int, lam: float = 0.23):
+        super().__init__()
+        self.T = T
+        self.lam = float(lam)
+
+    def forward(self, noise_sigma: torch.Tensor, noise_sigma_t: torch.Tensor | None = None):
+
+        return self.lam * (noise_sigma * noise_sigma) / (noise_sigma_t * noise_sigma_t + _EPS)
+
 def build_beta_schedule(
     name: str,
     T: int,
@@ -208,6 +258,7 @@ def build_beta_schedule(
     beta_min: float = 0.5,
     beta_max: float = 64.0,
     p: float = 2.0,
+    lam: float = 0.23,
     scale_by: str = "none",
 ):
     """
@@ -236,5 +287,8 @@ def build_beta_schedule(
 
     if name == "delta_interp":
         return DeltaInterpBetaSchedule(T=T, beta_min=beta_min, beta_max=beta_max, scale_by=scale_by)
+
+    if name == "dpir":
+        return DpirBetaSchedule(T=T, lam=lam)
 
     raise ValueError(f"Unknown beta schedule: {name}")

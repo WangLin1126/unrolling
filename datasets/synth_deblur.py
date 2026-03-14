@@ -116,13 +116,13 @@ class SyntheticNonBlindDeblur(Dataset):
         _, C, H, W = x.shape
         p = self.pad_border
 
-        sigma = self._sample_sigma()
+        blur_sigma = self._sample_sigma()
 
         # ── Reflect-pad → blur → crop ──
         x_pad = F.pad(x, (p, p, p, p), mode="reflect")
         Hp, Wp = H + 2 * p, W + 2 * p
 
-        otf = gaussian_otf(sigma, Hp, Wp, device=x.device, dtype=x.dtype)
+        otf = gaussian_otf(blur_sigma, Hp, Wp, device=x.device, dtype=x.dtype)
         y_pad = fft_conv2d_circular(x_pad, otf)
         y = y_pad[:, :, p:p+H, p:p+W]
 
@@ -134,12 +134,12 @@ class SyntheticNonBlindDeblur(Dataset):
         y = y.clamp(0, 1)
 
         # ── Precompute intermediate targets on CPU ──
-        targets = self._compute_targets_cpu(x_pad, sigma, H, W, p)
+        targets = self._compute_targets_cpu(x_pad, blur_sigma, H, W, p)
 
         return {
             "blur": y.squeeze(0),             # (C, H, W)
             "sharp": x.squeeze(0),            # (C, H, W)
-            "sigma": sigma,
+            "blur_sigma": blur_sigma,
             "noise_sigma": noise_sigma,
             "targets": targets,               # list of T+1 tensors, each (C, H, W)
             "path": self.paths[idx],

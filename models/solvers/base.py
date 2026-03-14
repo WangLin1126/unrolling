@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 
-DenoiserLike = Union[nn.Module, Callable[[torch.Tensor], torch.Tensor]]
+DenoiserLike = Union[nn.Module, Callable[..., torch.Tensor]]
 
 
 class BaseSolver(nn.Module, ABC):
@@ -22,5 +22,6 @@ class BaseSolver(nn.Module, ABC):
         otf: torch.Tensor,
         beta: torch.Tensor,
         inner_iters: int = 1,
+        noise_sigma = None,
     ) -> torch.Tensor:
         ...

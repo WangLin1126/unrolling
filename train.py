@@ -45,33 +45,18 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
     mc = cfg["model"]
     dc = cfg["data"]
     tc = cfg["train"]
-    dk = mc.get("denoiser_kwargs", {})
-
     dataset_name = dc.get("dataset_name", "DIV2K")
     denoiser = mc["denoiser"]
-
-    if denoiser == "dncnn":
-        depth_val = dk.get("depth", 8)
-        hidden_val = dk.get("mid_channels", 64)
-    elif denoiser == "unet":
-        depth_val = dk.get("num_levels", 2)
-        hidden_val = dk.get("base_ch", 32)
-    elif denoiser == "resblock":
-        depth_val = dk.get("num_blocks", 5)
-        hidden_val = dk.get("mid_channels", 64)
-    else:
-        depth_val = "NA"
-        hidden_val = "NA"
+    dk = mc["denoiser_kwargs"][denoiser]
     fh = "front_light-" if not mc["schedule_kwargs"]["front_heavy"] else ""
     params = (
         f"{fh}"
-        f"T_{mc['T']}"
-        f"-solver_{mc['solver']}"
-        f"-denoiser_{denoiser}"
-        f"-depth_{depth_val}"
-        f"-hidden_{hidden_val}"
-        f"-inner_{mc.get('inner_iters', 1)}"
-        f"-sigma_{mc['sigma_schedule']}"
+        f"T{mc['T']}"
+        f"-{mc['solver']}"
+        f"-{denoiser}"
+        f"-inner{mc.get('inner_iters', 1)}"
+        f"-blur_sigma_{mc['sigma_schedule']}_{dc['blur']['sigma_list']}"
+        f"-noise_sigma_{dc['blur']['noise_sigma_min']}_{dc['blur']['noise_sigma_max']}"
         f"-beta_{mc.get('beta_mode', 'geom')}"
         f"-lossw_{'learn' if mc.get('learnable_loss_weights') else 'uniform'}"
         f"-lmode_{tc.get('loss_mode')}"
@@ -153,12 +138,14 @@ def collate_fn(batch):
     Returns:
         blur:    (B, C, H, W)
         sharp:   (B, C, H, W)
-        sigmas:  (B,)
+        blur_sigma:  (B,)
+        noise_sigma : (B,)
         targets: list of T+1 tensors, each (B, C, H, W)
     """
     blurs = [b["blur"] for b in batch]
     sharps = [b["sharp"] for b in batch]
-    sigmas = torch.tensor([b["sigma"] for b in batch], dtype=torch.float32)
+    blur_sigmas = torch.tensor([b["blur_sigma"] for b in batch], dtype=torch.float32)
+    noise_sigmas = torch.tensor([b["noise_sigma"] for b in batch], dtype=torch.float32)
     target_lists = [b["targets"] for b in batch]
 
     T_plus_1 = len(target_lists[0])
@@ -186,7 +173,7 @@ def collate_fn(batch):
         for t in range(T_plus_1)
     ]
 
-    return blur_batch, sharp_batch, sigmas, targets_batch
+    return blur_batch, sharp_batch, blur_sigmas, noise_sigmas, targets_batch
 
 
 def train_val_split(dataset, val_ratio: float, seed: int = 42):
@@ -522,6 +509,8 @@ def main():
             schedule_kwargs=mc.get("schedule_kwargs", {}),
             beta_mode=mc.get("beta_mode", "geom"),
             beta_kwargs=mc.get("beta_kwargs", {}),
+            noise_sigma_mode = mc.get("noise_sigma_mode", "loguniform"),
+            noise_sigma_kwargs = mc.get("noise_sigma_kwargs", {}),
         ).to(device)
 
         if tc.get("use_compile", False):
@@ -625,16 +614,16 @@ def main():
             train_loss_sum_local = 0.0
             train_count_local = 0
 
-            for step, (blur, sharp, sigmas, targets) in enumerate(train_loader, 1):
+            for step, (blur, sharp, sigmas, noise_sigmas, targets) in enumerate(train_loader, 1):
                 blur = blur.to(device, non_blocking=True)
                 sharp = sharp.to(device, non_blocking=True)
                 sigmas = sigmas.to(device, non_blocking=True)
 
                 if use_precomputed:
                     targets_gpu = [t.to(device, non_blocking=True) for t in targets]
-                    result = model(blur, sigmas, None, targets_gpu)
+                    result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = None, precomputed_targets = targets_gpu)
                 else:
-                    result = model(blur, sigmas, sharp, None)
+                    result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = sharp, precomputed_targets = None)
 
                 loss, info = criterion(result["stage_outputs"], result["stage_targets"])
 
@@ -712,9 +701,9 @@ def main():
 
                         if use_precomputed:
                             targets_gpu = [t.to(device, non_blocking=True) for t in targets]
-                            result = model(blur, sigmas, None, targets_gpu)
+                            result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = None, precomputed_targets = targets_gpu)
                         else:
-                            result = model(blur, sigmas, sharp, None)
+                            result = model(blur = blur, sigma = sigmas, noise_sigma = noise_sigmas, x_gt = sharp, precomputed_targets = None)
 
                         loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
                         val_loss_sum_local += loss_v.item() * blur.shape[0]

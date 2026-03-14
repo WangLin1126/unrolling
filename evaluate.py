@@ -261,6 +261,8 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         schedule_kwargs=mc.get("schedule_kwargs", {}),
         beta_mode=mc.get("beta_mode", "geom"),
         beta_kwargs=mc.get("beta_kwargs", {}),
+        noise_sigma_mode = mc.get("noise_sigma_mode", "loguniform"),
+        noise_sigma_kwargs = mc.get("noise_sigma_kwargs", {}),
     ).to(device)
 
     state_dict, raw_ckpt = load_checkpoint_for_test(checkpoint_path, device)
@@ -288,7 +290,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
             blur = batch["blur"].to(device, non_blocking=True)
             sharp = batch["sharp"].to(device, non_blocking=True)
             sigma = batch["sigma"]
-
+            noise_sigma = batch["noise_sigma"]
             if not isinstance(sigma, torch.Tensor):
                 sigma = torch.tensor(sigma, dtype=torch.float32)
             sigma = sigma.to(device, non_blocking=True)
@@ -297,7 +299,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
                 sigma_unique = torch.unique(sigma.detach().cpu())
                 logger.info(f"[Batch {batch_idx:04d}] sigma_unique={sigma_unique.tolist()}")
 
-            result = model(blur, sigma, x_gt=None)
+            result = model(blur, sigma, noise_sigma, x_gt=None)
 
             pred_batch = result["pred"]
             gt_batch = sharp

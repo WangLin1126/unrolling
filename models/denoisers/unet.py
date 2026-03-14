@@ -21,8 +21,8 @@ class _DoubleConv(nn.Module):
         return self.net(x)
 
 
-class SmallUNet(nn.Module):
-    def __init__(self, in_channels: int = 3, base_ch: int = 32, num_levels: int = 2, **_kwargs):
+class UNet(nn.Module):
+    def __init__(self, in_channels: int = 3, mid_channels: int = 32, num_levels: int = 2, **_kwargs):
         super().__init__()
         self.num_levels = num_levels
 
@@ -30,7 +30,7 @@ class SmallUNet(nn.Module):
         self.pools = nn.ModuleList()
         ch = in_channels
         for i in range(num_levels):
-            out_ch = base_ch * (2 ** i)
+            out_ch = mid_channels * (2 ** i)
             self.encoders.append(_DoubleConv(ch, out_ch))
             self.pools.append(nn.MaxPool2d(2))
             ch = out_ch
@@ -41,7 +41,7 @@ class SmallUNet(nn.Module):
         self.decoders = nn.ModuleList()
         ch = ch * 2
         for i in range(num_levels - 1, -1, -1):
-            out_ch = base_ch * (2 ** i)
+            out_ch = mid_channels * (2 ** i)
             self.upconvs.append(nn.ConvTranspose2d(ch, out_ch, 2, stride=2))
             self.decoders.append(_DoubleConv(out_ch * 2, out_ch))
             ch = out_ch

@@ -50,17 +50,19 @@ class UnrolledDeblurNet(nn.Module):
         schedule_kwargs: dict | None = None,
         beta_kwargs: dict | None = None,
         beta_mode: str = "geom",
+        noise_sigma_mode: str = "loguniform",
+        noise_sigma_kwargs: dict | None = None,
     ):
         super().__init__()
         self.T = T
         self.inner_iters = inner_iters
         self.pad_border = pad_border
         self.schedule_name = schedule_name
-
-        self.delta_schedule = build_schedule(schedule_name, T=T, **(schedule_kwargs or {}))
+        self.delta_schedule = build_schedule(schedule_name, T=T, **(schedule_kwargs or {})) # for noise sigma distribution
+        self.noise_schedule = build_schedule(noise_sigma_mode, T=T, **(noise_sigma_kwargs or {}))
         self.solver = build_solver(solver_name)
 
-        dk = dict(in_channels=in_channels, **(denoiser_kwargs or {}))
+        dk = dict(in_channels=in_channels, **(denoiser_kwargs[denoiser_name] or {}))
         if share_denoisers:
             single = build_denoiser(denoiser_name, **dk)
             self.denoisers = nn.ModuleList([single] * T)
@@ -68,12 +70,10 @@ class UnrolledDeblurNet(nn.Module):
             self.denoisers = nn.ModuleList(
                 [build_denoiser(denoiser_name, **dk) for _ in range(T)]
             )
-
-        # self.log_betas = nn.Parameter(torch.zeros(T))
+        self.beta_mode = beta_mode
         self.beta_schedule = build_beta_schedule(
             name=beta_mode, T=T, **(beta_kwargs or {}),
         )
-
     @torch.no_grad()
     def _compute_targets_on_gpu(
         self, x_gt: torch.Tensor, deltas: torch.Tensor
@@ -97,17 +97,19 @@ class UnrolledDeblurNet(nn.Module):
         del x_gt_pad
         return targets
 
+
     def forward(
         self,
-        y: torch.Tensor,
+        blur: torch.Tensor,
         sigma: torch.Tensor | float,
+        noise_sigma: torch.Tensor | float,
         x_gt: torch.Tensor | None = None,
         precomputed_targets: list[torch.Tensor] | None = None,
     ) -> dict:
         """Run T-stage unrolled deblurring.
 
         Args:
-            y:     (B, C, H, W) blurry input
+            blur:     (B, C, H, W) blurry input
             sigma: scalar or (B,) tensor
             x_gt:  (B, C, H, W) clean image (only needed if no precomputed_targets
                    and schedule is trainable)
@@ -118,27 +120,34 @@ class UnrolledDeblurNet(nn.Module):
         Returns:
             dict with pred, stage_outputs, stage_targets, deltas
         """
-        B, C, H, W = y.shape
-        device = y.device
+        B, C, H, W = blur.shape
+        device = blur.device
         p = self.pad_border
 
         if not isinstance(sigma, torch.Tensor):
-            sigma = torch.tensor(sigma, device=device, dtype=y.dtype)
+            sigma = torch.tensor(sigma, device=device, dtype=blur.dtype)
+        if not isinstance(noise_sigma, torch.Tensor):
+            noise_sigma = torch.tensor(noise_sigma, device=device, dtype=blur.dtype)
         if sigma.dim() > 0:
             sigma = sigma[0]  # use first value (all same in batch)
-
+        if noise_sigma.dim() > 0:
+            noise_sigma = noise_sigma[0] # use first value (all same in batch)
         # per-stage deltas
         # deltas = self.delta_schedule()  # (T,)
         sigmas = self.delta_schedule(sigma) # (T,)
-        betas = self.beta_schedule(sigma, sigmas) # (T,)
-        
+        noise_sigma_schedule = self.noise_schedule(noise_sigma)
+        if self.beta_mode == 'dpir':
+            betas = self.beta_schedule(noise_sigma, noise_sigma_schedule) # (T,)
+        else:
+            betas = self.beta_schedule(sigma, sigmas) # (T,)
+
         # ── Resolve stage targets ───────────────────────────────
         stage_targets = None
         if precomputed_targets is not None:
-            # from dataset: targets[0]=clean, ..., targets[T]=most blurred
-            # stage T supervises with targets[T-1], ..., stage 1 with targets[0]
+            # from dataset: targets[0]=clean, ..., targets[T]=blurred + noise
+            # stage 0 supervises with targets[0], ..., stage T-1 with targets[T-1]
             all_targets = precomputed_targets
-            stage_targets = [all_targets[s - 1] for s in range(self.T, 0, -1)]
+            stage_targets = [all_targets[s - 1] for s in range(self.T, 0, -1)] # shift to target[-1] be the clean
         elif x_gt is not None and self.schedule_name == "trainable":
             # trainable schedule: must recompute with current deltas
             all_targets = self._compute_targets_on_gpu(x_gt, sigmas)
@@ -146,26 +155,26 @@ class UnrolledDeblurNet(nn.Module):
             del all_targets
 
         # ── Reflect-pad blurry input ────────────────────────────
-        y_pad = F.pad(y, (p, p, p, p), mode="reflect")
+        blur_pad = F.pad(blur, (p, p, p, p), mode="reflect")
         Hp, Wp = H + 2 * p, W + 2 * p
 
         # ── Reverse chain on padded grid ────────────────────────
         stage_outputs = []
-        x_t = y_pad
-        del y_pad
+        x_t = blur_pad
+        del blur_pad
 
-        for idx, s in enumerate(range(self.T, 0, -1)):
-            t = s - 1
+        for t in range(self.T):
             sigma_t = sigmas[t]
             beta_t = betas[t]
-
-            otf = gaussian_otf(sigma_t, Hp, Wp, device=device, dtype=y.dtype)
+            noise_sigma_t = noise_sigma_schedule[t]
+            otf = gaussian_otf(sigma_t, Hp, Wp, device=device, dtype=blur.dtype)
 
             x_t = self.solver.step(
                 x_t,
                 denoiser=self.denoisers[t],
                 otf=otf,
                 beta=beta_t,
+                noise_sigma=noise_sigma_t,
                 inner_iters=self.inner_iters,
             )
             stage_outputs.append(x_t[:, :, p:p+H, p:p+W])

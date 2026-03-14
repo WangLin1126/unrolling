@@ -20,14 +20,22 @@ data:
 model:
   T: 10                         # number of unrolling stages
   solver: "hqs"                # "hqs" | "admm" | "pg"
-  denoiser: "dncnn"            # "dncnn" | "unet_small" | "resblock"
+  denoiser: "dncnn"            # "dncnn" | "unet_small" | "resblock" | "drunet"
   checkpoint: null
   denoiser_kwargs:
-    mid_channels: 64
-    depth: 6                   # DnCNN conv layers
-    base_ch: 32                # SmallUNet base channels
-    num_levels: 2              # SmallUNet downsampling levels
-    num_blocks: 5              # ResBlock count
+    dncnn:
+      mid_channels: 32
+      depth: 15                   # DnCNN conv layers
+    unet:
+      mid_channels: 32                # UNet base channels
+      num_levels: 2              # UNet downsampling levels
+    resblock:
+      num_blocks: 5              # ResBlock count
+    drunet:
+      mid_channels: 32
+      num_blocks: 3 
+      residual: false
+
   schedule_kwargs:
     init: "uniform"
     r: 0.8
@@ -38,9 +46,14 @@ model:
     beta_min: 0.5
     beta_max: 64.0
     p: 2.0
+    lam: 0.23
     scale_by: "none"
+  noise_sigma_mode: "loguniform"
+  noise_sigma_kwargs:
+    max_ratio: 1.5
+    max_ratio: 0.1
   share_denoisers: false
-  inner_iters: 3
+  inner_iters: 1
   in_channels: 3
 
   learnable_loss_weights: false

@@ -4,13 +4,15 @@ from __future__ import annotations
 import torch.nn as nn
 
 from .dncnn import DnCNN
-from .unet_small import SmallUNet
+from .unet import UNet
 from .resblock import ResBlockDenoiser
+from .drunet import DRUNet
 
 DENOISER_REGISTRY: dict[str, type] = {
     "dncnn": DnCNN,
-    "unet": SmallUNet,
+    "unet": UNet,
     "resblock": ResBlockDenoiser,
+    "drunet": DRUNet,
 }
 
 
@@ -20,3 +22,9 @@ def build_denoiser(name: str, **kwargs) -> nn.Module:
             f"Unknown denoiser '{name}'. Choose from {list(DENOISER_REGISTRY)}"
         )
     return DENOISER_REGISTRY[name](**kwargs)
+
+def apply_denoiser(denoiser: nn.Module, x, noise_sigma = None):
+    """Call denoiser with sigma_t when the denoiser expects it."""
+    if getattr(denoiser, "requires_noise_sigma", False) and (noise_sigma is not None):
+        return denoiser(x, noise_sigma)
+    return denoiser(x)
