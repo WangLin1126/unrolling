@@ -9,7 +9,7 @@ TEST_BATCH_SIZE=8
 TEST_NUM_WORKERS=8
 
 CHECKPOINTS=(
-/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/results/DIV2K/front_light-T_5-solver_hqs-denoiser_dncnn-depth_15-hidden_64-inner_1-sigma_geom-beta_geom-lossw_uniform-lmode_last/20260306_203636/train/best.pth
+/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/results/DIV2K/T10-hqs-drunet-inner1-blur_sigma_uniform_4-noise_sigma_0.1_0.1-beta_geom-lossw_uniform-lmode_all/20260314_103535/train/best.pth
 )
 
 for CKPT in "${CHECKPOINTS[@]}"; do

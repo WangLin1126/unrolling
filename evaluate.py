@@ -294,10 +294,9 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
             if not isinstance(blur_sigma, torch.Tensor):
                 blur_sigma = torch.tensor(blur_sigma, dtype=torch.float32)
             blur_sigma = blur_sigma.to(device, non_blocking=True)
-
-            if blur_sigma.ndim > 0:
-                sigma_unique = torch.unique(blur_sigma.detach().cpu())
-                logger.info(f"[Batch {batch_idx:04d}] sigma_unique={sigma_unique.tolist()}")
+            if not isinstance(noise_sigma, torch.Tensor):
+                noise_sigma = torch.tensor(noise_sigma, dtype=torch.float32)
+            noise_sigma = noise_sigma.to(device, non_blocking=True)
 
             result = model(blur, blur_sigma, noise_sigma, x_gt=None)
 

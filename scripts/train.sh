@@ -49,8 +49,8 @@ LOSS_MODES=("all" "last" "one_stage")
 BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
-EPOCHS=3
-BATCH_SIZE_PER_GPU=20
+EPOCHS=200
+BATCH_SIZE_PER_GPU=48
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
@@ -90,14 +90,13 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --data.blur.noise_sigma_max "${NOISE_SIGMA_MAX}" \
     --model.T "${T}" \
     --model.solver "${SOLVER}" \
-    --model.sigma_schedule "${SIGMA_SCHEDULE}" \
+    --model.blur_sigma_schedule "${SIGMA_SCHEDULE}" \
     --model.denoiser "${DENOISER}" \
     --model.share_denoisers "${SHARE_DENOISERS}" \
     --model.inner_iters "${INNER_ITER}" \
     --model.learnable_loss_weights "${LEARNABLE_LOSS_WEIGHT}" \
-    --model.schedule_kwargs.front_heavy "${FRONT_HEAVY}" \
-    --model.beta_mode "${BETA_MODE}" \
-    --model.beta_kwargs.p 2 \
+    --model.blur_sigma_schedule_kwargs.front_heavy "${FRONT_HEAVY}" \
+    --model.beta_schedule "${BETA_MODE}" \
     --model.checkpoint "${CHECKPOINT}" \
     --train.epochs "${EPOCHS}" \
     --train.batch_size "${BATCH_SIZE_PER_GPU}" \

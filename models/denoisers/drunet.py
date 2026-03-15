@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from typing import Sequence
 
 class ResBlock(nn.Module):
     def __init__(self, channels: int):
@@ -59,29 +59,70 @@ class DRUNet(nn.Module):
         mid_channels: int = 64,
         num_blocks: int = 4,
         residual: bool = False,
+        num_levels: int = 4,
+        ch_mult: float = 2.0,
+        chs: Sequence[int] | None = None,
         **_kwargs,
     ):
+        """
+        Args:
+            in_channels: input/output image channels
+            mid_channels: base channel width for level 0
+            num_blocks: number of ResBlocks in each stage
+            residual: if True, return x - out
+            num_levels: number of channel levels, e.g. 4 -> [C, 2C, 4C, 8C]
+            ch_mult: channel multiplication factor between levels
+            chs: optional explicit channel list; if given, overrides num_levels/ch_mult
+
+        Examples:
+            DRUNet(mid_channels=32, num_levels=4, ch_mult=2)
+                -> chs = [32, 64, 128, 256]
+
+            DRUNet(chs=[32, 48, 96, 192])
+                -> use exactly these channels
+        """
         super().__init__()
         self.requires_noise_sigma = True
         self.in_channels = in_channels
         self.residual = residual
 
-        chs = (mid_channels, mid_channels * 2, mid_channels * 4, mid_channels * 8)
+        if chs is not None:
+            if len(chs) < 1:
+                raise ValueError("chs must contain at least one channel value")
+            self.chs = [int(c) for c in chs]
+        else:
+            if num_levels < 1:
+                raise ValueError("num_levels must be >= 1")
+            if ch_mult <= 0:
+                raise ValueError("ch_mult must be > 0")
+            self.chs = [int(round(mid_channels * (ch_mult ** i))) for i in range(num_levels)]
 
-        # input = image + sigma_map
-        self.head = nn.Conv2d(in_channels + 1, chs[0], 3, padding=1, bias=False)
+        # 输入: image + sigma_map
+        self.head = nn.Conv2d(in_channels + 1, self.chs[0], 3, padding=1, bias=False)
 
-        self.enc1 = DownBlock(chs[0], chs[1], num_blocks)
-        self.enc2 = DownBlock(chs[1], chs[2], num_blocks)
-        self.enc3 = DownBlock(chs[2], chs[3], num_blocks)
+        # encoder
+        self.encoders = nn.ModuleList()
+        for i in range(len(self.chs) - 1):
+            self.encoders.append(DownBlock(self.chs[i], self.chs[i + 1], num_blocks))
 
-        self.bottleneck = nn.Sequential(*[ResBlock(chs[3]) for _ in range(num_blocks)])
+        # bottleneck
+        self.bottleneck = nn.Sequential(
+            *[ResBlock(self.chs[-1]) for _ in range(num_blocks)]
+        )
 
-        self.dec3 = UpBlock(chs[3], chs[2], chs[2], num_blocks)
-        self.dec2 = UpBlock(chs[2], chs[1], chs[1], num_blocks)
-        self.dec1 = UpBlock(chs[1], chs[0], chs[0], num_blocks)
+        # decoder
+        self.decoders = nn.ModuleList()
+        for i in range(len(self.chs) - 1, 0, -1):
+            self.decoders.append(
+                UpBlock(
+                    in_channels=self.chs[i],
+                    skip_channels=self.chs[i - 1],
+                    out_channels=self.chs[i - 1],
+                    num_blocks=num_blocks,
+                )
+            )
 
-        self.tail = nn.Conv2d(chs[0], in_channels, 3, padding=1, bias=False)
+        self.tail = nn.Conv2d(self.chs[0], in_channels, 3, padding=1, bias=False)
 
     def _sigma_to_map(self, x: torch.Tensor, sigma) -> torch.Tensor:
         B, _, H, W = x.shape
@@ -119,17 +160,17 @@ class DRUNet(nn.Module):
         sigma_map = self._sigma_to_map(x, sigma)
         x = torch.cat([x, sigma_map], dim=1)
 
-        x0 = self.head(x)
+        x = self.head(x)
 
-        x1, s1 = self.enc1(x0)
-        x2, s2 = self.enc2(x1)
-        x3, s3 = self.enc3(x2)
+        skips = []
+        for enc in self.encoders:
+            x, skip = enc(x)
+            skips.append(skip)
 
-        x4 = self.bottleneck(x3)
+        x = self.bottleneck(x)
 
-        x = self.dec3(x4, s3)
-        x = self.dec2(x, s2)
-        x = self.dec1(x, s1)
+        for dec, skip in zip(self.decoders, reversed(skips)):
+            x = dec(x, skip)
 
         out = self.tail(x)
 

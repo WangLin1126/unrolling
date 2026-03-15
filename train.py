@@ -521,7 +521,7 @@ def main():
             base_loss=base_loss,
             learnable=mc.get("learnable_loss_weights", False),
             mode=tc.get("loss_mode", "all"),
-            blur_total_sigma=float(dc["blur"]["sigma_list"].strip())
+            blur_sigma_list=dc["blur"]["sigma_list"]
         ).to(device)
 
         if use_ddp:
@@ -540,7 +540,7 @@ def main():
         if is_main_process():
             logger.info(
                 f"Model: {mc['solver'].upper()} solver, {mc['denoiser']} denoiser, "
-                f"T={T}, schedule={schedule_name}"
+                f"T={T}"
             )
             logger.info(f"Trainable params: {n_params:,}")
 
@@ -617,7 +617,7 @@ def main():
                 blur = blur.to(device, non_blocking=True)
                 sharp = sharp.to(device, non_blocking=True)
                 blur_sigmas = blur_sigmas.to(device, non_blocking=True)
-
+                noise_sigmas = noise_sigmas.to(device, non_blocking=True)
                 if use_precomputed:
                     targets_gpu = [t.to(device, non_blocking=True) for t in targets]
                     result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)

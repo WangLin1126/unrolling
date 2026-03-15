@@ -32,9 +32,11 @@ model:
     resblock:
       num_blocks: 5              # ResBlock count
     drunet:
-      mid_channels: 32
+      mid_channels: 24
       num_blocks: 3
       residual: false
+      num_levels: 3
+      ch_mult: 1.5
 
   blur_sigma_schedule: "uniform"   # "uniform" | "trainable" | "geom" | "power"
   blur_sigma_schedule_kwargs:
