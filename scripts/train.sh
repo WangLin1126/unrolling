@@ -28,7 +28,7 @@ SOLVERS=("hqs")
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock
-DENOISERS=("drunet")
+DENOISERS=("dncnn")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
@@ -44,13 +44,13 @@ NUM_BLOCKS=5
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
 # all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("all" "last" "one_stage")
-# constant | geom | geom_inc | geom_dec | delta_power | delta_interp
-BETA_MODES=("geom")
+LOSS_MODES=("all")
+# constant | geom | geom_inc | geom_dec | dpir
+BETA_MODES=("constant")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=48
+BATCH_SIZE_PER_GPU=24
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
@@ -59,7 +59,7 @@ GAMMA=0.5
 GRAD_CLIP=1.0
 SEED=42
 NUM_WORKERS=12
-LOG_EVERY=20
+LOG_EVERY=10
 VAL_EVERY=1
 EARLY_STOP_PATIENCE=15
 RUN_TEST_AFTER=true

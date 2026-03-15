@@ -24,7 +24,7 @@ model:
   checkpoint: null
   denoiser_kwargs:
     dncnn:
-      mid_channels: 32
+      mid_channels: 48
       depth: 15                   # DnCNN conv layers
     unet:
       mid_channels: 32                # UNet base channels

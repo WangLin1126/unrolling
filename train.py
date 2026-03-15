@@ -521,7 +521,7 @@ def main():
             base_loss=base_loss,
             learnable=mc.get("learnable_loss_weights", False),
             mode=tc.get("loss_mode", "all"),
-            blur_sigma_list=dc["blur"]["sigma_list"]
+            # blur_total_sigma=dc["blur"]["sigma_list"]
         ).to(device)
 
         if use_ddp:
