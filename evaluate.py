@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import time
 import matplotlib
@@ -100,20 +101,26 @@ def calc_psnr(pred: torch.Tensor, target: torch.Tensor) -> float:
     return 10 * np.log10(1.0 / mse)
 
 
-def calc_ssim(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11) -> float:
-    C = pred.shape[0]
-    coords = torch.arange(window_size, dtype=pred.dtype, device=pred.device) - (window_size - 1) / 2
+def _build_ssim_window(channels: int, window_size: int, dtype, device) -> torch.Tensor:
+    coords = torch.arange(window_size, dtype=dtype, device=device) - (window_size - 1) / 2
     g = torch.exp(-(coords ** 2) / (2 * 1.5 ** 2))
     g = g / g.sum()
-    window = (g.unsqueeze(1) @ g.unsqueeze(0)).unsqueeze(0).unsqueeze(0).expand(C, 1, -1, -1)
+    return (g.unsqueeze(1) @ g.unsqueeze(0)).unsqueeze(0).unsqueeze(0).expand(channels, 1, -1, -1).contiguous()
+
+
+def calc_ssim(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11,
+              ssim_window: torch.Tensor | None = None) -> float:
+    C = pred.shape[0]
+    if ssim_window is None:
+        ssim_window = _build_ssim_window(C, window_size, pred.dtype, pred.device)
 
     p, t = pred.unsqueeze(0), target.unsqueeze(0)
     pad = window_size // 2
-    mu_p = F.conv2d(p, window, padding=pad, groups=C)
-    mu_t = F.conv2d(t, window, padding=pad, groups=C)
-    sig_p2 = F.conv2d(p ** 2, window, padding=pad, groups=C) - mu_p ** 2
-    sig_t2 = F.conv2d(t ** 2, window, padding=pad, groups=C) - mu_t ** 2
-    sig_pt = F.conv2d(p * t, window, padding=pad, groups=C) - mu_p * mu_t
+    mu_p = F.conv2d(p, ssim_window, padding=pad, groups=C)
+    mu_t = F.conv2d(t, ssim_window, padding=pad, groups=C)
+    sig_p2 = F.conv2d(p ** 2, ssim_window, padding=pad, groups=C) - mu_p ** 2
+    sig_t2 = F.conv2d(t ** 2, ssim_window, padding=pad, groups=C) - mu_t ** 2
+    sig_pt = F.conv2d(p * t, ssim_window, padding=pad, groups=C) - mu_p * mu_t
 
     C1, C2 = 0.01 ** 2, 0.03 ** 2
     ssim_map = ((2 * mu_p * mu_t + C1) * (2 * sig_pt + C2)) / (
@@ -315,6 +322,10 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
     save_images = tc.get("save_images", True)
 
     psnr_list, ssim_list, name_list = [], [], []
+    ssim_window = None  # lazily built and cached
+
+    fig_executor = ThreadPoolExecutor(max_workers=4) if save_images else None
+    fig_futures = []
 
     with torch.no_grad():
         global_idx = 0
@@ -341,8 +352,12 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
                 sigma_val = blur_sigma[b].item()
                 stem = Path(paths[b]).stem
 
+                # Build SSIM window once, reuse for all images
+                if ssim_window is None:
+                    ssim_window = _build_ssim_window(pred.shape[0], 11, pred.dtype, pred.device)
+
                 p = calc_psnr(pred, gt)
-                s = calc_ssim(pred, gt)
+                s = calc_ssim(pred, gt, ssim_window=ssim_window)
                 psnr_list.append(p)
                 ssim_list.append(s)
                 name_list.append(stem)
@@ -352,16 +367,28 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
                 )
 
                 if save_images:
-                    stage_outs = [so[b, :, :h_orig, :w_orig] for so in stage_outputs_batch]
-                    save_deblur_figure(
-                        blur=blur_b,
-                        stage_outputs=stage_outs,
-                        gt=gt,
-                        save_path=str(fig_dir / f"{stem}.png"),
+                    # Move tensors to CPU before submitting to thread pool
+                    stage_outs_cpu = [so[b, :, :h_orig, :w_orig].cpu() for so in stage_outputs_batch]
+                    blur_b_cpu = blur_b.cpu()
+                    gt_cpu = gt.cpu()
+                    save_path = str(fig_dir / f"{stem}.png")
+                    fut = fig_executor.submit(
+                        save_deblur_figure,
+                        blur=blur_b_cpu,
+                        stage_outputs=stage_outs_cpu,
+                        gt=gt_cpu,
+                        save_path=save_path,
                         num_vis_stages=num_vis,
                     )
+                    fig_futures.append(fut)
 
                 global_idx += 1
+
+    # Wait for all figure saves to complete
+    for fut in fig_futures:
+        fut.result()  # raises if save_deblur_figure failed
+    if fig_executor is not None:
+        fig_executor.shutdown(wait=False)
 
     avg_psnr = float(np.mean(psnr_list)) if psnr_list else 0.0
     avg_ssim = float(np.mean(ssim_list)) if ssim_list else 0.0
@@ -434,6 +461,12 @@ def main():
 
     if args.prefer_ckpt_config and isinstance(raw_ckpt, dict) and "config" in raw_ckpt:
         cfg = raw_ckpt["config"]
+
+    # Apply CLI overrides (after prefer_ckpt_config so CLI has highest priority)
+    if args.test_batch_size is not None:
+        cfg.setdefault("test", {})["batch_size"] = args.test_batch_size
+    if args.test_num_workers is not None:
+        cfg.setdefault("test", {})["num_workers"] = args.test_num_workers
 
     exp_dir = Path(args.exp_dir) if args.exp_dir is not None else infer_test_dir_from_checkpoint(args.checkpoint)
     run_evaluate(cfg, args.checkpoint, exp_dir)
