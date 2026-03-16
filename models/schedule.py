@@ -79,9 +79,11 @@ class GeomBlurSchedule(BlurSigmaSchedule):
     def _compute_alpha(self, device, dtype):
         t = self._t_idx.to(dtype=dtype)
         if self.front_heavy:
-            w = self.r ** t
-        else:
+            # front represent initial resotore precedure of the image, not the blur forward process. 
+            # The first sigma use for first blur kernel.
             w = self.r ** (self.T - 1 - t)
+        else:
+            w = self.r ** t
         return w / (w.sum() + _EPS)
 
 
@@ -135,7 +137,6 @@ class NoiseSigmaSchedule(nn.Module):
         super().__init__()
         self.T = T
 
-
 class LogUniformNoiseSigmaSchedule(NoiseSigmaSchedule):
     """Log-uniform interpolation between max_ratio and min_ratio of noise_sigma."""
 
@@ -154,8 +155,8 @@ class LogUniformNoiseSigmaSchedule(NoiseSigmaSchedule):
             return sigma_max.unsqueeze(-1)
 
         t = self._t_idx.to(dtype=noise_sigma.dtype)
-        ratio = sigma_min / sigma_max
-        return sigma_max.unsqueeze(-1) * ratio.unsqueeze(-1) ** (t / (self.T - 1))
+        ratio = sigma_max / sigma_min.clamp(min=_EPS)
+        return sigma_min.unsqueeze(-1) * ratio.unsqueeze(-1) ** (t / (self.T - 1))
 
 
 def build_noise_sigma_schedule(

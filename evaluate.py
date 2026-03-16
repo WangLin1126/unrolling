@@ -30,6 +30,37 @@ from datasets.synth_deblur import SyntheticNonBlindDeblur, BlurConfig
 from models.unrolled_net import UnrolledDeblurNet
 
 
+def test_collate_fn(batch):
+    blurs = [b["blur"] for b in batch]
+    sharps = [b["sharp"] for b in batch]
+    blur_sigmas = torch.tensor([b["blur_sigma"] for b in batch], dtype=torch.float32)
+    noise_sigmas = torch.tensor([b["noise_sigma"] for b in batch], dtype=torch.float32)
+    paths = [b["path"] for b in batch]
+
+    shapes = [x.shape for x in blurs]
+    need_pad = len(set(shapes)) > 1
+    orig_sizes = [(s[1], s[2]) for s in shapes]
+
+    if need_pad:
+        max_h = max(s[1] for s in shapes)
+        max_w = max(s[2] for s in shapes)
+        def _pad(t):
+            _, h, w = t.shape
+            if h == max_h and w == max_w:
+                return t
+            return F.pad(t, (0, max_w - w, 0, max_h - h), mode="reflect")
+        blurs = [_pad(b) for b in blurs]
+        sharps = [_pad(s) for s in sharps]
+
+    return {
+        "blur": torch.stack(blurs),
+        "sharp": torch.stack(sharps),
+        "blur_sigma": blur_sigmas,
+        "noise_sigma": noise_sigmas,
+        "paths": paths,
+        "orig_sizes": orig_sizes,
+    }
+
 # ── Logging ────────────────────────────────────────────────────────
 
 def setup_logger(log_file: Path) -> logging.Logger:
@@ -245,6 +276,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
+        collate_fn=test_collate_fn
     )
 
     # ── Model ───────────────────────────────────────────────────
@@ -282,21 +314,17 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
     num_vis = 6
     save_images = tc.get("save_images", True)
 
-    psnr_list, ssim_list = [], []
+    psnr_list, ssim_list, name_list = [], [], []
 
     with torch.no_grad():
         global_idx = 0
         for batch_idx, batch in enumerate(test_loader):
             blur = batch["blur"].to(device, non_blocking=True)
             sharp = batch["sharp"].to(device, non_blocking=True)
-            blur_sigma = batch["blur_sigma"]
-            noise_sigma = batch["noise_sigma"]
-            if not isinstance(blur_sigma, torch.Tensor):
-                blur_sigma = torch.tensor(blur_sigma, dtype=torch.float32)
-            blur_sigma = blur_sigma.to(device=device, dtype=torch.float32, non_blocking=True)
-            if not isinstance(noise_sigma, torch.Tensor):
-                noise_sigma = torch.tensor(noise_sigma, dtype=torch.float32)
-            noise_sigma = noise_sigma.to(device=device, dtype=torch.float32, non_blocking=True)
+            blur_sigma = batch["blur_sigma"].to(device=device, dtype=torch.float32, non_blocking=True)
+            noise_sigma = batch["noise_sigma"].to(device=device, dtype=torch.float32, non_blocking=True)
+            paths = batch["paths"]
+            orig_sizes = batch["orig_sizes"]
 
             result = model(blur, blur_sigma, noise_sigma, x_gt=None)
 
@@ -306,27 +334,30 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
 
             batch_size_actual = pred_batch.shape[0]
             for b in range(batch_size_actual):
-                pred = pred_batch[b]
-                gt = gt_batch[b]
-                sigma_val = blur_sigma[b].item() if blur_sigma.ndim > 0 else blur_sigma.item()
+                h_orig, w_orig = orig_sizes[b]
+                pred = pred_batch[b, :, :h_orig, :w_orig]
+                gt = gt_batch[b, :, :h_orig, :w_orig]
+                blur_b = blur[b, :, :h_orig, :w_orig]
+                sigma_val = blur_sigma[b].item()
+                stem = Path(paths[b]).stem
 
                 p = calc_psnr(pred, gt)
                 s = calc_ssim(pred, gt)
                 psnr_list.append(p)
                 ssim_list.append(s)
-
+                name_list.append(stem)
                 logger.info(
-                    f"[{global_idx:04d}] batch={batch_idx:04d} item={b:02d} "
+                    f"[{global_idx:04d}] {stem} "
                     f"PSNR={p:.2f} dB  SSIM={s:.4f}  sigma={sigma_val:.4f}"
                 )
 
                 if save_images:
-                    stage_outs = [so[b] for so in stage_outputs_batch]
+                    stage_outs = [so[b, :, :h_orig, :w_orig] for so in stage_outputs_batch]
                     save_deblur_figure(
-                        blur=blur[b],
+                        blur=blur_b,
                         stage_outputs=stage_outs,
                         gt=gt,
-                        save_path=str(fig_dir / f"{global_idx:04d}.png"),
+                        save_path=str(fig_dir / f"{stem}.png"),
                         num_vis_stages=num_vis,
                     )
 
@@ -341,6 +372,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         "avg_ssim": avg_ssim,
         "per_image_psnr": psnr_list,
         "per_image_ssim": ssim_list,
+        "per_image_name": name_list,
         "checkpoint": str(Path(checkpoint_path).resolve()),
         "test_batch_size": test_batch_size,
     }
@@ -351,8 +383,8 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         f.write(f"Avg PSNR    : {avg_psnr:.2f} dB\n")
         f.write(f"Avg SSIM    : {avg_ssim:.4f}\n")
         f.write(f"Checkpoint  : {checkpoint_path}\n\n")
-        for i, (p, s) in enumerate(zip(psnr_list, ssim_list)):
-            f.write(f"[{i:04d}] PSNR={p:.2f}  SSIM={s:.4f}\n")
+        for i, (name, p, s) in enumerate(zip(name_list, psnr_list, ssim_list)):
+            f.write(f"[{i:04d}] {name}  PSNR={p:.2f}  SSIM={s:.4f}\n")
 
     with open(exp_dir / "test_results.json", "w") as f:
         json.dump(summary, f, indent=2)

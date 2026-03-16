@@ -106,7 +106,7 @@ class SyntheticNonBlindDeblur(Dataset):
                                  freq_sq=freq_sq)
             current = fft_conv2d_circular(current, otf_t)
             targets.append(current[:, :, p:p+H, p:p+W].squeeze(0))
-        return targets  # list of T+1 tensors, each (C, H, W)
+        return targets  # list of T+1 tensors, each (C, H, W). targets[0] = clear image.
 
     def __getitem__(self, idx):
         img = Image.open(self.paths[idx]).convert("RGB")

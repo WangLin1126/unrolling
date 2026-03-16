@@ -49,7 +49,7 @@ LOSS_MODES=("all")
 BETA_MODES=("constant")
 
 # ── Training ────────────────────────────────────────────────────
-EPOCHS=200
+EPOCHS=2
 BATCH_SIZE_PER_GPU=24
 LR=2e-4
 WEIGHT_DECAY=0.05
@@ -66,8 +66,8 @@ RUN_TEST_AFTER=true
 USE_COMPILE=false
 
 # ── Testing ─────────────────────────────────────────────────────
-TEST_BATCH_SIZE=1
-TEST_NUM_WORKERS=4
+TEST_BATCH_SIZE=8
+TEST_NUM_WORKERS=8
 SAVE_IMAGES=true
 NUM_VIS_STAGES=6
 

@@ -156,7 +156,7 @@ class UnrolledDeblurNet(nn.Module):
         stage_targets = None
         if precomputed_targets is not None:
             all_targets = precomputed_targets
-            stage_targets = [all_targets[s - 1] for s in range(self.T, 0, -1)]
+            stage_targets = [all_targets[s - 1] for s in range(self.T, 0, -1)] # transform to stage_targets[-1] is the clear image
         elif x_gt is not None and self.blur_sigma_schedule_name == "trainable":
             all_targets = self._compute_targets_on_gpu(x_gt, blur_sigma_deltas)
             stage_targets = [all_targets[s - 1] for s in range(self.T, 0, -1)]
@@ -173,9 +173,9 @@ class UnrolledDeblurNet(nn.Module):
         del blur_pad
 
         for t in range(self.T):
-            blur_sigma_t = blur_sigma_deltas[:, t]         # (B,)
-            beta_t = betas[:, t]                           # (B,)
-            noise_sigma_t = noise_sigma_levels[:, t]       # (B,)
+            blur_sigma_t = blur_sigma_deltas[:, self.T-1-t]         # (B,)
+            beta_t = betas[:, self.T-1-t]                           # (B,)
+            noise_sigma_t = noise_sigma_levels[:, self.T-1-t]       # (B,)
             otf = gaussian_otf(blur_sigma_t, Hp, Wp,
                                device=device, dtype=blur.dtype,
                                freq_sq=freq_sq)
