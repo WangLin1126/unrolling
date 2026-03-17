@@ -8,16 +8,16 @@ NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
 
 # ── Data ────────────────────────────────────────────────────────
-TRAIN_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/datasets/DIV2K_train_256_random_5/*.png"
-TEST_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/datasets/DIV2K_valid_256_random_5/*.png"
+TRAIN_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_train_256_random_5/*.png"
+TEST_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_valid_256_random_5/*.png"
 VAL_RATIO=0.15
 PAD_BORDER=32
 
 # blur generation
 SIGMA_LIST="4"
 NOISE_PROB=1.0
-NOISE_SIGMA_MIN=0.1
-NOISE_SIGMA_MAX=0.1
+NOISE_SIGMA_MIN=0.05
+NOISE_SIGMA_MAX=0.2
 
 # ── Model ───────────────────────────────────────────────────────
 CHECKPOINT=None
@@ -27,8 +27,8 @@ SOLVERS=("hqs")
 # geom | power | uniform | trainable
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
-# dncnn | unet | resblock
-DENOISERS=("dncnn")
+# dncnn | unet | resblock | drunet
+DENOISERS=("drunet")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
@@ -44,13 +44,13 @@ NUM_BLOCKS=5
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
 # all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("all")
+LOSS_MODES=("last")
 # constant | geom | geom_inc | geom_dec | dpir
-BETA_MODES=("constant")
+BETA_MODES=("dpir")
 
 # ── Training ────────────────────────────────────────────────────
-EPOCHS=2
-BATCH_SIZE_PER_GPU=24
+EPOCHS=200
+BATCH_SIZE_PER_GPU=56
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
@@ -61,14 +61,14 @@ SEED=42
 NUM_WORKERS=12
 LOG_EVERY=10
 VAL_EVERY=1
-EARLY_STOP_PATIENCE=15
+EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
 USE_COMPILE=false
 
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=8
 TEST_NUM_WORKERS=8
-SAVE_IMAGES=true
+SAVE_IMAGES=false
 NUM_VIS_STAGES=6
 
 for T in "${TS[@]}"; do

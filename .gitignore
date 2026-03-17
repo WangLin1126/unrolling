@@ -222,4 +222,5 @@ datasets/**
 !datasets/__init__.py
 *.pth
 *.png
+test.ipynb
 results
