@@ -19,8 +19,8 @@ data:
 # Model
 model:
   T: 10                         # number of unrolling stages
-  solver: "hqs"                # "hqs" | "admm" | "pg"
-  denoiser: "dncnn"            # "dncnn" | "unet" | "resblock" | "drunet"
+  solver: "hqs"                # "hqs" | "admm" | "pg" | "ista" | "fista"
+  denoiser: "dncnn"            # "dncnn" | "unet" | "resblock" | "drunet" | "uformer" | "restormer"
   checkpoint: null
   denoiser_kwargs:
     dncnn:
@@ -37,6 +37,18 @@ model:
       residual: false
       num_levels: 3
       ch_mult: 1.5
+    uformer:
+      mid_channels: 32
+      num_levels: 2
+      num_blocks: 2
+      num_heads: 2
+      window_size: 8
+    restormer:
+      mid_channels: 48
+      num_levels: 3
+      num_blocks: 2
+      num_heads: 2
+      ffn_expansion: 2.66
 
   blur_sigma_schedule: "uniform"   # "uniform" | "trainable" | "geom" | "power"
   blur_sigma_schedule_kwargs:

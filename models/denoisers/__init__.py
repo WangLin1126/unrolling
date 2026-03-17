@@ -7,12 +7,16 @@ from .dncnn import DnCNN
 from .unet import UNet
 from .resblock import ResBlockDenoiser
 from .drunet import DRUNet
+from .uformer import UFormer
+from .restormer import Restormer
 
 DENOISER_REGISTRY: dict[str, type] = {
     "dncnn": DnCNN,
     "unet": UNet,
     "resblock": ResBlockDenoiser,
     "drunet": DRUNet,
+    "uformer": UFormer,
+    "restormer": Restormer,
 }
 
 
