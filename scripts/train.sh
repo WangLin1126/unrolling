@@ -20,7 +20,7 @@ NOISE_SIGMA_MIN=0.05
 NOISE_SIGMA_MAX=0.2
 
 # ── Model ───────────────────────────────────────────────────────
-CHECKPOINT=None
+CHECKPOINT="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/results/DIV2K/T10-hqs-drunet-inner1-blur_sigma_uniform_4-noise_sigma_0.05_0.2-beta_dpir-lossw_uniform-lmode_last/20260317_081500/train/last.pth"
 TS=(10)
 # hqs | admm | pg
 SOLVERS=("hqs")

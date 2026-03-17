@@ -322,6 +322,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
     save_images = tc.get("save_images", True)
 
     psnr_list, ssim_list, name_list = [], [], []
+    blur_sigma_list, noise_sigma_list = [], []
     ssim_window = None  # lazily built and cached
 
     fig_executor = ThreadPoolExecutor(max_workers=4) if save_images else None
@@ -350,6 +351,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
                 gt = gt_batch[b, :, :h_orig, :w_orig]
                 blur_b = blur[b, :, :h_orig, :w_orig]
                 sigma_val = blur_sigma[b].item()
+                noise_val = noise_sigma[b].item()
                 stem = Path(paths[b]).stem
 
                 # Build SSIM window once, reuse for all images
@@ -361,9 +363,11 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
                 psnr_list.append(p)
                 ssim_list.append(s)
                 name_list.append(stem)
+                blur_sigma_list.append(sigma_val)
+                noise_sigma_list.append(noise_val)
                 logger.info(
                     f"[{global_idx:04d}] {stem} "
-                    f"PSNR={p:.2f} dB  SSIM={s:.4f}  sigma={sigma_val:.4f}"
+                    f"PSNR={p:.2f} dB  SSIM={s:.4f}  sigma={sigma_val:.4f}  noise={noise_val:.4f}"
                 )
 
                 if save_images:
@@ -410,8 +414,8 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         f.write(f"Avg PSNR    : {avg_psnr:.2f} dB\n")
         f.write(f"Avg SSIM    : {avg_ssim:.4f}\n")
         f.write(f"Checkpoint  : {checkpoint_path}\n\n")
-        for i, (name, p, s) in enumerate(zip(name_list, psnr_list, ssim_list)):
-            f.write(f"[{i:04d}] {name}  PSNR={p:.2f}  SSIM={s:.4f}\n")
+        for i, (name, p, s, bsig, nsig) in enumerate(zip(name_list, psnr_list, ssim_list, blur_sigma_list, noise_sigma_list)):
+            f.write(f"[{i:04d}] {name}  PSNR={p:.2f}  SSIM={s:.4f}  blur_sigma={bsig:.4f}  noise_sigma={nsig:.4f}\n")
 
     with open(exp_dir / "test_results.json", "w") as f:
         json.dump(summary, f, indent=2)
