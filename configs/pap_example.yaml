@@ -1,0 +1,121 @@
+# ─── PAP (Plug-and-Play) configuration example ───
+# Each denoiser entry has a unique key (name_position format recommended).
+# 'position' determines the ordering in the unrolled chain (relative, must be unique).
+# 'pretrain' can be null (train from scratch) or a path to a .pth checkpoint.
+# 'trainable' controls whether the denoiser parameters are frozen (false) or trained (true).
+
+data:
+  dataset_name: "DIV2K"
+  train_glob: "/home/lwang/storage/DIV2K/DIV2K_train_512_grid_10/*.png"
+  val_ratio: 0.1
+  test_glob: "/home/lwang/storage/DIV2K/DIV2K_valid_512_grid_10/*.png"
+  pad_border: 32
+  blur:
+    blur_type: "gauss"
+    sigma_min: 0.8
+    sigma_max: 3.0
+    sigma_list: "4"
+    noise_prob: 1.0
+    noise_sigma_min: 0.04
+    noise_sigma_max: 0.05
+
+model:
+  solver: "hqs"                  # "hqs" | "admm" | "pg" | "ista" | "fista"
+  in_channels: 3
+
+  blur_sigma_schedule: "uniform"
+  blur_sigma_schedule_kwargs:
+    init: "uniform"
+    r: 0.8
+    p: 2.0
+    front_heavy: true
+
+  beta_schedule: "geom"
+  beta_kwargs:
+    beta: 8
+    beta_min: 0.5
+    beta_max: 64.0
+    lam: 0.23
+
+  noise_sigma_schedule: "loguniform"
+  noise_sigma_schedule_kwargs:
+    max_ratio: 1.5
+    min_ratio: 0.1
+
+  inner_iters: 1
+
+  learnable_loss_weights: false
+  learnable_schedule: false
+
+# Denoiser chain: T denoisers in order specified by 'position'.
+# Each entry is a dict with the denoiser type as key.
+denoiser_chain:
+  - type: dncnn
+    position: 1
+    pretrain: null
+    trainable: true
+    params:
+      mid_channels: 48
+      depth: 15
+
+  - type: dncnn
+    position: 2
+    pretrain: null
+    trainable: true
+    params:
+      mid_channels: 48
+      depth: 15
+
+  - type: unet
+    position: 3
+    pretrain: null
+    trainable: true
+    params:
+      mid_channels: 32
+      num_levels: 2
+
+  - type: resblock
+    position: 4
+    pretrain: null
+    trainable: true
+    params:
+      num_blocks: 5
+
+  - type: drunet
+    position: 5
+    pretrain: null
+    trainable: true
+    params:
+      mid_channels: 24
+      num_blocks: 3
+      residual: false
+      num_levels: 3
+      ch_mult: 1.5
+
+loss:
+  - name: "charbonnier"
+    weight: 1.0
+  - name: "ssim"
+    weight: 0.2
+
+train:
+  epochs: 200
+  batch_size: 6
+  lr: 1.0e-4
+  weight_decay: 0.05
+  scheduler: "cosine"
+  step_size: 50
+  gamma: 0.5
+  grad_clip: 1.0
+  seed: 42
+  num_workers: 12
+  log_every: 20
+  val_every: 1
+  early_stop_patience: 20
+  run_test_after_train: true
+  loss_mode: "all"
+
+test:
+  batch_size: 1
+  save_images: true
+  num_vis_stages: 5

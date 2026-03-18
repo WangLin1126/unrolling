@@ -19,32 +19,13 @@ NOISE_PROB=1.0
 NOISE_SIGMA_MIN=0.05
 NOISE_SIGMA_MAX=0.2
 
-# ── Model ───────────────────────────────────────────────────────
-CHECKPOINT="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/results/DIV2K/T10-hqs-drunet-inner1-blur_sigma_uniform_4-noise_sigma_0.05_0.2-beta_dpir-lossw_uniform-lmode_last/20260317_081500/train/last.pth"
-TS=(10)
+# ── PAP Config ──────────────────────────────────────────────────
+# Path to the PAP YAML config (defines the heterogeneous denoiser chain)
+PAP_CONFIG="configs/pap_example.yaml"
+
+# ── Solver ──────────────────────────────────────────────────────
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
-# geom | power | uniform | trainable
-SIGMA_SCHEDULES=("uniform")
-FRONT_HEAVY=true
-# dncnn | unet | resblock | drunet | uformer | restormer
-DENOISERS=("drunet")
-SHARE_DENOISERS=false
-INNER_ITERS=(1)
-
-# denoiser architecture
-# DnCNN
-MID_CHANNELS=32
-DEPTH=15
-# Unet
-BASE_CH=32
-NUM_LEVELS=2
-NUM_BLOCKS=5
-
-# schedule & loss
-LEARNABLE_LOSS_WEIGHTS=(false)
-# all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("last")
 # constant | geom | geom_inc | geom_dec | dpir
 BETA_MODES=("dpir")
 
@@ -63,7 +44,11 @@ LOG_EVERY=10
 VAL_EVERY=1
 EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
-USE_COMPILE=false
+
+# ── Loss ────────────────────────────────────────────────────────
+# all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
+LOSS_MODES=("last")
+LEARNABLE_LOSS_WEIGHTS=false
 
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=8
@@ -71,15 +56,12 @@ TEST_NUM_WORKERS=8
 SAVE_IMAGES=false
 NUM_VIS_STAGES=6
 
-for T in "${TS[@]}"; do
 for SOLVER in "${SOLVERS[@]}"; do
-for SIGMA_SCHEDULE in "${SIGMA_SCHEDULES[@]}"; do
-for DENOISER in "${DENOISERS[@]}"; do
-for INNER_ITER in "${INNER_ITERS[@]}"; do
-for LEARNABLE_LOSS_WEIGHT in "${LEARNABLE_LOSS_WEIGHTS[@]}"; do
-for LOSS_MODE in "${LOSS_MODES[@]}"; do
 for BETA_MODE in "${BETA_MODES[@]}"; do
-torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
+for LOSS_MODE in "${LOSS_MODES[@]}"; do
+
+torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" pap/pap_train.py \
+    --config "${PAP_CONFIG}" \
     --data.train_glob "${TRAIN_GLOB}" \
     --data.test_glob "${TEST_GLOB}" \
     --data.val_ratio "${VAL_RATIO}" \
@@ -88,16 +70,9 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --data.blur.noise_prob "${NOISE_PROB}" \
     --data.blur.noise_sigma_min "${NOISE_SIGMA_MIN}" \
     --data.blur.noise_sigma_max "${NOISE_SIGMA_MAX}" \
-    --model.T "${T}" \
     --model.solver "${SOLVER}" \
-    --model.blur_sigma_schedule "${SIGMA_SCHEDULE}" \
-    --model.denoiser "${DENOISER}" \
-    --model.share_denoisers "${SHARE_DENOISERS}" \
-    --model.inner_iters "${INNER_ITER}" \
-    --model.learnable_loss_weights "${LEARNABLE_LOSS_WEIGHT}" \
-    --model.blur_sigma_schedule_kwargs.front_heavy "${FRONT_HEAVY}" \
     --model.beta_schedule "${BETA_MODE}" \
-    --model.checkpoint "${CHECKPOINT}" \
+    --model.learnable_loss_weights "${LEARNABLE_LOSS_WEIGHTS}" \
     --train.epochs "${EPOCHS}" \
     --train.batch_size "${BATCH_SIZE_PER_GPU}" \
     --train.lr "${LR}" \
@@ -113,7 +88,6 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --train.early_stop_patience "${EARLY_STOP_PATIENCE}" \
     --train.run_test_after_train "${RUN_TEST_AFTER}" \
     --train.loss_mode "${LOSS_MODE}" \
-    --train.use_compile "${USE_COMPILE}" \
     --test.batch_size "${TEST_BATCH_SIZE}" \
     --test.num_workers "${TEST_NUM_WORKERS}" \
     --test.save_images "${SAVE_IMAGES}" \
@@ -122,12 +96,6 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
 done
 done
 done
-done
-done
-done
-done
-done
-
 
 echo ""
-echo "Done."
+echo "PAP training done."
