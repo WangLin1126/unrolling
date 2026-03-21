@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader
 
 from datasets.synth_deblur import SyntheticNonBlindDeblur, BlurConfig
 from models.unrolled_net import UnrolledDeblurNet
+from utils.frequency import radial_average_psd, frequency_band_error
 
 
 def test_collate_fn(batch):
@@ -213,6 +214,89 @@ def save_deblur_figure(
     plt.close(fig)
 
 
+# ── CATS analysis visualisation ─────────────────────────────────────
+
+def save_spectral_convergence(
+    stage_outputs: list[torch.Tensor],
+    gt: torch.Tensor,
+    save_path: str,
+    num_bands: int = 16,
+):
+    """Plot radially-averaged frequency error per stage (the 'money plot').
+
+    Creates a heatmap: x-axis = frequency band, y-axis = stage index.
+    """
+    T = len(stage_outputs)
+    errors = np.zeros((T, num_bands))
+
+    for t in range(T):
+        band_err = frequency_band_error(stage_outputs[t], gt, num_bands=num_bands)
+        errors[t] = band_err.cpu().numpy()
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+    im = ax.imshow(
+        np.log10(errors + 1e-10), aspect="auto", cmap="viridis",
+        origin="lower",
+    )
+    ax.set_xlabel("Frequency band (low → high)")
+    ax.set_ylabel("Stage index")
+    ax.set_title("Log₁₀ spectral error per stage")
+    plt.colorbar(im, ax=ax, label="log₁₀(MSE)")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_stage_psnr_trajectory(
+    stage_outputs: list[torch.Tensor],
+    gt: torch.Tensor,
+    save_path: str,
+):
+    """Plot per-stage PSNR vs stage index."""
+    T = len(stage_outputs)
+    psnrs = [calc_psnr(stage_outputs[t], gt) for t in range(T)]
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+    ax.plot(range(1, T + 1), psnrs, "o-", linewidth=2, markersize=6)
+    ax.set_xlabel("Stage")
+    ax.set_ylabel("PSNR (dB)")
+    ax.set_title("Per-stage PSNR trajectory")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_stage_specialization_heatmap(
+    stage_outputs: list[torch.Tensor],
+    gt: torch.Tensor,
+    save_path: str,
+    num_bands: int = 8,
+):
+    """Heatmap of per-stage, per-frequency-band PSNR improvement."""
+    T = len(stage_outputs)
+    improvements = np.zeros((T, num_bands))
+
+    for t in range(T):
+        curr_err = frequency_band_error(stage_outputs[t], gt, num_bands=num_bands).cpu().numpy()
+        if t == 0:
+            # Improvement over blurry input (no prev stage output)
+            improvements[t] = curr_err
+        else:
+            prev_err = frequency_band_error(stage_outputs[t - 1], gt, num_bands=num_bands).cpu().numpy()
+            improvements[t] = prev_err - curr_err  # positive = improvement
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+    im = ax.imshow(improvements, aspect="auto", cmap="RdYlGn", origin="lower")
+    ax.set_xlabel("Frequency band (low → high)")
+    ax.set_ylabel("Stage index")
+    ax.set_title("Stage specialization: per-band error reduction")
+    plt.colorbar(im, ax=ax, label="Error reduction (MSE)")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 # ── Checkpoint helpers ──────────────────────────────────────────────
 
 def load_yaml_config(path: str | Path) -> dict:
@@ -386,6 +470,26 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
                     )
                     fig_futures.append(fut)
 
+                    # CATS analysis: spectral convergence for first 5 images
+                    if global_idx < 5:
+                        cats_dir = fig_dir / "cats_analysis"
+                        cats_dir.mkdir(exist_ok=True)
+                        fig_futures.append(fig_executor.submit(
+                            save_spectral_convergence,
+                            stage_outs_cpu, gt_cpu,
+                            str(cats_dir / f"{stem}_spectral.png"),
+                        ))
+                        fig_futures.append(fig_executor.submit(
+                            save_stage_psnr_trajectory,
+                            stage_outs_cpu, gt_cpu,
+                            str(cats_dir / f"{stem}_psnr_trajectory.png"),
+                        ))
+                        fig_futures.append(fig_executor.submit(
+                            save_stage_specialization_heatmap,
+                            stage_outs_cpu, gt_cpu,
+                            str(cats_dir / f"{stem}_specialization.png"),
+                        ))
+
                 global_idx += 1
 
     # Wait for all figure saves to complete
@@ -396,6 +500,8 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
 
     avg_psnr = float(np.mean(psnr_list)) if psnr_list else 0.0
     avg_ssim = float(np.mean(ssim_list)) if ssim_list else 0.0
+
+    logger.info(f"CATS analysis figures saved to: {fig_dir / 'cats_analysis'}")
 
     summary = {
         "num_images": len(psnr_list),

@@ -238,6 +238,95 @@ class DpirBetaSchedule(BetaSchedule):
         return self.lam * (ns * ns) / (noise_sigma_levels * noise_sigma_levels + _EPS)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Difficulty Schedules for CATS (Continuation-Aware Trajectory Supervision)
+# Maps stage index t → difficulty d(t) ∈ [0, 1], monotonically increasing.
+# Used to parameterise frequency cutoffs, operator interpolation, etc.
+# ═══════════════════════════════════════════════════════════════════════
+
+class DifficultySchedule(nn.Module):
+    """Base class: produces (T,) difficulty values d(t) ∈ [0, 1]."""
+
+    def __init__(self, T: int):
+        super().__init__()
+        self.T = T
+
+    def forward(self) -> torch.Tensor:
+        """Return (T,) monotonically increasing difficulty in [0, 1]."""
+        raise NotImplementedError
+
+
+class LinearDifficultySchedule(DifficultySchedule):
+    """d(t) = (t+1) / T  (linear from 1/T to 1.0)."""
+
+    def forward(self) -> torch.Tensor:
+        return torch.linspace(1.0 / self.T, 1.0, self.T)
+
+
+class PowerDifficultySchedule(DifficultySchedule):
+    """d(t) = ((t+1) / T)^gamma.
+
+    gamma > 1: slow start (recommended — careful early, aggressive late)
+    gamma < 1: fast start
+    gamma = 1: linear
+    """
+
+    def __init__(self, T: int, gamma: float = 2.0):
+        super().__init__(T)
+        self.gamma = gamma
+
+    def forward(self) -> torch.Tensor:
+        t = torch.linspace(1.0 / self.T, 1.0, self.T)
+        return t ** self.gamma
+
+
+class GeomDifficultySchedule(DifficultySchedule):
+    """d(t) = 1 - r^(t+1) normalised to [d_min, 1].
+
+    r close to 1: slow start; r close to 0: fast start.
+    """
+
+    def __init__(self, T: int, r: float = 0.7):
+        super().__init__(T)
+        self.r = r
+
+    def forward(self) -> torch.Tensor:
+        t = torch.arange(1, self.T + 1, dtype=torch.float32)
+        raw = 1.0 - self.r ** t
+        # normalise so that d(T) = 1
+        return raw / (raw[-1] + _EPS)
+
+
+class TrainableDifficultySchedule(DifficultySchedule):
+    """d(t) = cumsum(softmax(logits))_t — learnable monotone schedule."""
+
+    def __init__(self, T: int):
+        super().__init__(T)
+        self.logits = nn.Parameter(torch.zeros(T))
+
+    def forward(self) -> torch.Tensor:
+        return torch.cumsum(torch.softmax(self.logits, dim=0), dim=0)
+
+
+def build_difficulty_schedule(
+    name: str,
+    T: int,
+    gamma: float = 2.0,
+    r: float = 0.7,
+    **_extra,
+) -> DifficultySchedule:
+    name = name.lower()
+    if name == "linear":
+        return LinearDifficultySchedule(T=T)
+    if name == "power":
+        return PowerDifficultySchedule(T=T, gamma=gamma)
+    if name == "geom":
+        return GeomDifficultySchedule(T=T, r=r)
+    if name == "trainable":
+        return TrainableDifficultySchedule(T=T)
+    raise ValueError(f"Unknown difficulty schedule '{name}'")
+
+
 def build_beta_schedule(
     name: str,
     T: int,

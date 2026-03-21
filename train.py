@@ -521,6 +521,7 @@ def main():
             base_loss=base_loss,
             learnable=mc.get("learnable_loss_weights", False),
             mode=tc.get("loss_mode", "all"),
+            cts_kwargs=tc.get("cts_kwargs", None),
         ).to(device)
 
         if use_ddp:
@@ -567,6 +568,8 @@ def main():
         patience = tc.get("early_stop_patience", 0)
         no_improve_count = 0
         use_precomputed = (mc.get("blur_sigma_schedule", "uniform") != "trainable")
+        loss_mode = tc.get("loss_mode", "all")
+        use_cats = loss_mode.startswith("cats_")
 
         if resume_ckpt is not None:
             ckpt = load_checkpoint(
@@ -623,7 +626,13 @@ def main():
                 else:
                     result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
 
-                loss, info = criterion(result["stage_outputs"], result["stage_targets"])
+                if use_cats:
+                    loss, info = criterion(
+                        result["stage_outputs"], result["stage_targets"],
+                        x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+                    )
+                else:
+                    loss, info = criterion(result["stage_outputs"], result["stage_targets"])
 
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -703,7 +712,13 @@ def main():
                         else:
                             result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
 
-                        loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
+                        if use_cats:
+                            loss_v, _ = criterion(
+                                result["stage_outputs"], result["stage_targets"],
+                                x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+                            )
+                        else:
+                            loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
                         val_loss_sum_local += loss_v.item() * blur.shape[0]
 
                         pred = result["pred"]

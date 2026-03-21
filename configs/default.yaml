@@ -101,6 +101,15 @@ train:
   run_test_after_train: true
   gpus: "0"                     # e.g. "0,1,2,3"
   loss_mode: "all"              # "all" | "last" | "one_stage" | "blur_last"
+                                # CATS modes: "cats_freq" | "cats_operator" | "cats_residual" | "cats_combined"
+  # ── CATS (Continuation-Aware Trajectory Supervision) ──
+  cts_kwargs:
+    difficulty_schedule: "power"  # "linear" | "power" | "geom" | "trainable"
+    gamma: 2.0                   # power-law exponent (for "power" schedule)
+    r: 0.7                       # geometric ratio (for "geom" schedule)
+    filter_type: "gaussian"      # "gaussian" | "butterworth" | "ideal"
+    residual_weight: 0.0         # weight for residual loss in cats_combined
+    lambda_final: 0.0            # extra weight on final-stage clean-GT loss
 
 # Testing
 test:
