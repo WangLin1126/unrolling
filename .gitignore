@@ -223,4 +223,5 @@ datasets/**
 *.pth
 *.png
 test.ipynb
-resultstest.ipynb
+results
+test.ipynb
