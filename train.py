@@ -65,6 +65,27 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return Path(base) / dataset_name / params / timestamp
 
+def build_cats_exp_dir(cfg: dict, base: str = "results") -> Path:
+    mc = cfg["model"]
+    dc = cfg["data"]
+    tc = cfg["train"]
+    dataset_name = dc.get("dataset_name", "DIV2K")
+    denoiser = mc["denoiser"]
+    dk = mc["denoiser_kwargs"][denoiser]
+    params = (
+        f"{tc.get('loss_mode', 'all')}"
+        f"T{mc['T']}"
+        f"-{mc['solver']}"
+        f"-{denoiser}"
+        f"-inner{mc.get('inner_iters', 1)}"
+        f"-blur_{dc['blur']['sigma_list']}"
+        f"-noise_{dc['blur']['noise_sigma_min']}_{dc['blur']['noise_sigma_max']}"
+        f"-beta_{mc.get('beta_schedule', 'geom')}"
+        f"-filter_{tc.get('cts_kwargs').get('filter_type','gaussian')}"
+    )
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path(base) / dataset_name / params / timestamp
 
 def load_config(path: str) -> dict:
     with open(path, "r") as f:
@@ -424,7 +445,10 @@ def main():
             exp_dir = train_dir.parent
             test_dir = exp_dir / "test"
         else:
-            exp_dir = build_exp_dir(cfg)
+            if tc['loss_mode'].startswith("cats_"):
+                exp_dir = build_cats_exp_dir(cfg)
+            else:
+                exp_dir = build_exp_dir(cfg)
             train_dir = exp_dir / "train"
             test_dir = exp_dir / "test"
 

@@ -96,7 +96,8 @@ def compute_cts_operator_targets(
     """Compute CATS-Operator closed-form targets in Fourier domain.
 
     Target_t = IFFT{ [μ_t |H|² Y + (1-μ_t) X_gt] / [μ_t |H|² + (1-μ_t)] }
-
+    μ ≈ 0 → target ≈ clean X_gt (hard)
+    μ ≈ 1 → target ≈ blurry observation (easy)
     Args:
         x_gt:        (B, C, H, W) clean ground truth
         blur:        (B, C, H, W) blurry observation

@@ -226,7 +226,7 @@ class StagewiseLoss(nn.Module):
                 "cats_operator mode requires blur and blur_sigma"
             d = self.difficulty_schedule().to(device)  # (T,)
             cats_targets = compute_cts_operator_targets(
-                x_gt=x_gt, blur=blur, blur_sigma=blur_sigma, mu_schedule=d,
+                x_gt=x_gt, blur=blur, blur_sigma=blur_sigma, mu_schedule=1.0-d,
             )
 
         # ── Main loss loop ──────────────────────────────────────

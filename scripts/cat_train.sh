@@ -16,8 +16,8 @@ PAD_BORDER=32
 # blur generation
 SIGMA_LIST="4"
 NOISE_PROB=1.0
-NOISE_SIGMA_MIN=0.05
-NOISE_SIGMA_MAX=0.2
+NOISE_SIGMA_MIN=0.1
+NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
@@ -29,20 +29,28 @@ SOLVERS=("hqs")
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
-DENOISERS=("drunet")
+DENOISERS=("dncnn")
 SHARE_DENOISERS=false
-INNER_ITERS=(1)
+INNER_ITERS=1
 
-# schedule & loss
-LEARNABLE_LOSS_WEIGHTS=(false)
-# all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("last")
 # constant | geom | geom_inc | geom_dec | dpir
-BETA_MODES=("dpir")
+BETA_MODES=("constant")
+# ("cats_freq" "cats_operator" "cats_residual" "cats_combined")
+LOSS_MODES=("cats_combined")
+# Difficulty schedule: how d(t) grows from 0 → 1 across stages
+DIFFICULTY_SCHEDULE="power"      # "linear" | "power" | "geom" | "trainable"
+DIFFICULTY_GAMMA=2.0             # exponent for "power" schedule (>1 = slow start)
+DIFFICULTY_R=0.7                 # ratio for "geom" schedule
+# Frequency filter type for cats_freq / cats_combined
+FILTER_TYPES=("gaussian")           # "gaussian" | "butterworth" | "ideal"
+# Residual weight for cats_combined mode (0 = freq-only)
+RESIDUAL_WEIGHT=0.5
+# Extra weight on final-stage clean-GT loss (0 = disabled)
+LAMBDA_FINAL=0.0
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=56
+BATCH_SIZE_PER_GPU=24
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
@@ -56,22 +64,31 @@ VAL_EVERY=1
 EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
 USE_COMPILE=false
+LEARNABLE_LOSS_WEIGHTS=false
 
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=8
 TEST_NUM_WORKERS=8
-SAVE_IMAGES=false
+SAVE_IMAGES=true                 # true to generate CATS analysis figures
 NUM_VIS_STAGES=6
 
+# ── Run ─────────────────────────────────────────────────────────
 for T in "${TS[@]}"; do
 for SOLVER in "${SOLVERS[@]}"; do
 for SIGMA_SCHEDULE in "${SIGMA_SCHEDULES[@]}"; do
 for DENOISER in "${DENOISERS[@]}"; do
-for INNER_ITER in "${INNER_ITERS[@]}"; do
+for FILTER_TYPE in "${FILTER_TYPES[@]}"; do
 for LEARNABLE_LOSS_WEIGHT in "${LEARNABLE_LOSS_WEIGHTS[@]}"; do
 for LOSS_MODE in "${LOSS_MODES[@]}"; do
 for BETA_MODE in "${BETA_MODES[@]}"; do
+echo "============================================================"
+echo "Training CATS with loss_mode=${LOSS_MODE}"
+echo "  difficulty_schedule=${DIFFICULTY_SCHEDULE}, gamma=${DIFFICULTY_GAMMA}"
+echo "  filter_type=${FILTER_TYPE}, residual_weight=${RESIDUAL_WEIGHT}"
+echo "============================================================"
+
 torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
+    --config configs/default.yaml \
     --data.train_glob "${TRAIN_GLOB}" \
     --data.test_glob "${TEST_GLOB}" \
     --data.val_ratio "${VAL_RATIO}" \
@@ -85,8 +102,8 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --model.blur_sigma_schedule "${SIGMA_SCHEDULE}" \
     --model.denoiser "${DENOISER}" \
     --model.share_denoisers "${SHARE_DENOISERS}" \
-    --model.inner_iters "${INNER_ITER}" \
-    --model.learnable_loss_weights "${LEARNABLE_LOSS_WEIGHT}" \
+    --model.inner_iters "${INNER_ITERS}" \
+    --model.learnable_loss_weights "${LEARNABLE_LOSS_WEIGHTS}" \
     --model.blur_sigma_schedule_kwargs.front_heavy "${FRONT_HEAVY}" \
     --model.beta_schedule "${BETA_MODE}" \
     --model.checkpoint "${CHECKPOINT}" \
@@ -106,6 +123,12 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --train.run_test_after_train "${RUN_TEST_AFTER}" \
     --train.loss_mode "${LOSS_MODE}" \
     --train.use_compile "${USE_COMPILE}" \
+    --train.cts_kwargs.difficulty_schedule "${DIFFICULTY_SCHEDULE}" \
+    --train.cts_kwargs.gamma "${DIFFICULTY_GAMMA}" \
+    --train.cts_kwargs.r "${DIFFICULTY_R}" \
+    --train.cts_kwargs.filter_type "${FILTER_TYPE}" \
+    --train.cts_kwargs.residual_weight "${RESIDUAL_WEIGHT}" \
+    --train.cts_kwargs.lambda_final "${LAMBDA_FINAL}" \
     --test.batch_size "${TEST_BATCH_SIZE}" \
     --test.num_workers "${TEST_NUM_WORKERS}" \
     --test.save_images "${SAVE_IMAGES}" \
@@ -120,6 +143,5 @@ done
 done
 done
 
-
 echo ""
-echo "Done."
+echo "CATS training done."
