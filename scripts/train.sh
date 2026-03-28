@@ -16,8 +16,8 @@ PAD_BORDER=32
 # blur generation
 SIGMA_LIST="4"
 NOISE_PROB=1.0
-NOISE_SIGMA_MIN=0.05
-NOISE_SIGMA_MAX=0.2
+NOISE_SIGMA_MIN=0.1
+NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
@@ -29,20 +29,20 @@ SOLVERS=("hqs")
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
-DENOISERS=("drunet")
+DENOISERS=("dncnn")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
 # all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("last")
+LOSS_MODES=("all")
 # constant | geom | geom_inc | geom_dec | dpir
-BETA_MODES=("dpir")
+BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=56
+BATCH_SIZE_PER_GPU=24
 LR=2e-4
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
