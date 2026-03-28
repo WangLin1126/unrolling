@@ -584,7 +584,7 @@ def main():
                 output_device=local_rank,
                 broadcast_buffers=False,
             )
-            if stage_wise_mode == "gradual_in_epoch":
+            if stage_wise_mode in ("gradual_in_epoch", "one_then_another"):
                 ddp_kwargs["find_unused_parameters"] = True
             model = DDP(model, **ddp_kwargs)
 
