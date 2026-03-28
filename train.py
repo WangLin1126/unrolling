@@ -37,12 +37,18 @@ from torch.utils.data.distributed import DistributedSampler
 from datasets.synth_deblur import SyntheticNonBlindDeblur, BlurConfig
 from models.unrolled_net import UnrolledDeblurNet
 from utils.losses import build_combined_loss, StagewiseLoss
-from utils.stage_training import (
-    get_active_stage,
-    freeze_denoisers_except,
-    unfreeze_all_denoisers,
+from train_method import (
+    VALID_MODES,
+    TrainContext,
     build_per_stage_optimizers,
     build_per_stage_schedulers,
+    train_one_epoch_end2end,
+    setup_one_then_another,
+    train_one_epoch_one_then_another,
+    train_one_epoch_gradual_in_epoch,
+    setup_gradually_freeze,
+    train_one_epoch_gradually_freeze,
+    run_tail_align,
 )
 
 
@@ -565,15 +571,14 @@ def main():
 
         # ── Stage-wise training mode ────────────────────────────
         stage_wise_mode = tc.get("stage_wise_train", "end2end")
-        if stage_wise_mode not in ("end2end", "one_then_another", "gradual_in_epoch"):
+        if stage_wise_mode not in VALID_MODES:
             raise ValueError(
                 f"Unknown stage_wise_train mode '{stage_wise_mode}'. "
-                "Choose from: end2end, one_then_another, gradual_in_epoch"
+                f"Choose from: {sorted(VALID_MODES)}"
             )
         if stage_wise_mode != "end2end" and mc.get("share_denoisers", False):
             raise ValueError(
-                "Stage-wise training (one_then_another / gradual_in_epoch) "
-                "is incompatible with share_denoisers=True."
+                "Stage-wise training is incompatible with share_denoisers=True."
             )
         if is_main_process():
             logger.info(f"Stage-wise training mode: {stage_wise_mode}")
@@ -584,7 +589,7 @@ def main():
                 output_device=local_rank,
                 broadcast_buffers=False,
             )
-            if stage_wise_mode in ("gradual_in_epoch", "one_then_another"):
+            if stage_wise_mode != "end2end":
                 ddp_kwargs["find_unused_parameters"] = True
             model = DDP(model, **ddp_kwargs)
 
@@ -696,10 +701,38 @@ def main():
                     "Optimizer/scheduler/criterion/RNG were not restored."
                 )
 
+        # ── Build shared TrainContext ───────────────────────────
+        ctx = TrainContext(
+            model=model,
+            criterion=criterion,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            all_params=all_params,
+            device=device,
+            cfg=cfg,
+            T=T,
+            use_precomputed=use_precomputed,
+            use_cats=use_cats,
+            use_ddp=use_ddp,
+            train_dir=train_dir,
+            logger=logger if is_main_process() else None,
+            optimizers=optimizers,
+            schedulers=schedulers,
+            best_psnr=best_psnr,
+            best_val_loss=best_val_loss,
+            no_improve_count=no_improve_count,
+        )
+
         # ── Training loop ───────────────────────────────────────
         early_stop_flag = False
+        prev_active_stage = -1
+        prev_freeze_boundary = -2
 
-        prev_active_stage = -1  # track stage transitions for one_then_another
+        # Extra checkpoint kwargs for multi-optimizer modes
+        _ckpt_extra_kw: dict = {}
+        if stage_wise_mode == "gradual_in_epoch" and optimizers is not None:
+            _ckpt_extra_kw["optimizers"] = optimizers
+            _ckpt_extra_kw["schedulers"] = schedulers
 
         for epoch in range(start_epoch, tc["epochs"] + 1):
             if train_sampler is not None:
@@ -708,11 +741,14 @@ def main():
             model.train()
             criterion.train()
 
-            # ── Per-epoch setup for one_then_another ───────────
-            if stage_wise_mode == "one_then_another":
-                cur_active = get_active_stage(epoch, tc["epochs"], T)
-                raw_model = unwrap_model(model)
-                freeze_denoisers_except(raw_model, cur_active)
+            t0 = time.time()
+
+            # ── Dispatch to strategy ───────────────────────────
+            if stage_wise_mode == "end2end":
+                avg_loss = train_one_epoch_end2end(ctx, train_loader, epoch)
+
+            elif stage_wise_mode == "one_then_another":
+                cur_active = setup_one_then_another(ctx, epoch)
                 if cur_active != prev_active_stage:
                     if is_main_process():
                         logger.info(
@@ -720,155 +756,28 @@ def main():
                             f"active denoiser stage = {cur_active}"
                         )
                     prev_active_stage = cur_active
+                avg_loss = train_one_epoch_one_then_another(
+                    ctx, train_loader, epoch, cur_active,
+                )
 
-            t0 = time.time()
-            train_loss_sum_local = 0.0
-            train_count_local = 0
+            elif stage_wise_mode == "gradual_in_epoch":
+                avg_loss = train_one_epoch_gradual_in_epoch(ctx, train_loader, epoch)
 
-            for step, (blur, sharp, blur_sigmas, noise_sigmas, targets) in enumerate(train_loader, 1):
-                blur = blur.to(device, non_blocking=True)
-                sharp = sharp.to(device, non_blocking=True)
-                blur_sigmas = blur_sigmas.to(device, non_blocking=True)
-                noise_sigmas = noise_sigmas.to(device, non_blocking=True)
-                if use_precomputed:
-                    targets_gpu = [t.to(device, non_blocking=True) for t in targets]
-
-                # ────────────────────────────────────────────────
-                # MODE: end2end  (original behaviour)
-                # ────────────────────────────────────────────────
-                if stage_wise_mode == "end2end":
-                    if use_precomputed:
-                        result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
-                    else:
-                        result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
-
-                    if use_cats:
-                        loss, info = criterion(
-                            result["stage_outputs"], result["stage_targets"],
-                            x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+            elif stage_wise_mode == "gradually_freeze":
+                last_frozen = setup_gradually_freeze(ctx, epoch)
+                if last_frozen != prev_freeze_boundary:
+                    if is_main_process():
+                        desc = (
+                            f"frozen denoisers 0..{last_frozen}"
+                            if last_frozen >= 0 else "all trainable"
                         )
-                    else:
-                        loss, info = criterion(result["stage_outputs"], result["stage_targets"])
-
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-
-                    if tc["grad_clip"] > 0:
-                        nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
-                    optimizer.step()
-
-                    bs = blur.shape[0]
-                    train_loss_sum_local += loss.item() * bs
-                    train_count_local += bs
-
-                    if is_main_process() and step % tc["log_every"] == 0:
-                        w_str = ", ".join(f"{w:.3f}" for w in info["weights"])
                         logger.info(
-                            f"[Train] E{epoch} S{step} "
-                            f"loss={loss.item():.5f} "
-                            f"stage_losses={[f'{l:.4f}' for l in info['per_stage_loss']]} "
-                            f"weights=[{w_str}]"
+                            f"[gradually_freeze] Epoch {epoch}: {desc}"
                         )
-
-                # ────────────────────────────────────────────────
-                # MODE: one_then_another
-                # ────────────────────────────────────────────────
-                elif stage_wise_mode == "one_then_another":
-                    if use_precomputed:
-                        result = model(
-                            blur=blur, blur_sigma=blur_sigmas,
-                            noise_sigma=noise_sigmas, x_gt=None,
-                            precomputed_targets=targets_gpu,
-                            max_stage=cur_active,
-                            active_stage=cur_active,
-                        )
-                    else:
-                        result = model(
-                            blur=blur, blur_sigma=blur_sigmas,
-                            noise_sigma=noise_sigmas, x_gt=sharp,
-                            precomputed_targets=None,
-                            max_stage=cur_active,
-                            active_stage=cur_active,
-                        )
-
-                    # Single-stage loss: compare last output to its target
-                    raw_crit = unwrap_model(criterion)
-                    loss = raw_crit.base_loss(
-                        result["stage_outputs"][-1],
-                        result["stage_targets"][-1],
-                    )
-
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-
-                    if tc["grad_clip"] > 0:
-                        nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
-                    optimizer.step()
-
-                    bs = blur.shape[0]
-                    train_loss_sum_local += loss.item() * bs
-                    train_count_local += bs
-
-                    if is_main_process() and step % tc["log_every"] == 0:
-                        logger.info(
-                            f"[Train] E{epoch} S{step} "
-                            f"stage={cur_active} "
-                            f"loss={loss.item():.5f}"
-                        )
-
-                # ────────────────────────────────────────────────
-                # MODE: gradual_in_epoch
-                # ────────────────────────────────────────────────
-                elif stage_wise_mode == "gradual_in_epoch":
-                    raw_model = unwrap_model(model)
-                    raw_crit = unwrap_model(criterion)
-                    per_stage_losses: list[float] = []
-
-                    for t_stage in range(T):
-                        optimizers[t_stage].zero_grad(set_to_none=True)
-
-                        if use_precomputed:
-                            result = model(
-                                blur=blur, blur_sigma=blur_sigmas,
-                                noise_sigma=noise_sigmas, x_gt=None,
-                                precomputed_targets=targets_gpu,
-                                max_stage=t_stage,
-                                active_stage=t_stage,
-                            )
-                        else:
-                            result = model(
-                                blur=blur, blur_sigma=blur_sigmas,
-                                noise_sigma=noise_sigmas, x_gt=sharp,
-                                precomputed_targets=None,
-                                max_stage=t_stage,
-                                active_stage=t_stage,
-                            )
-
-                        loss_t = raw_crit.base_loss(
-                            result["stage_outputs"][-1],
-                            result["stage_targets"][-1],
-                        )
-                        loss_t.backward()
-
-                        if tc["grad_clip"] > 0:
-                            nn.utils.clip_grad_norm_(
-                                list(raw_model.denoisers[t_stage].parameters()),
-                                tc["grad_clip"],
-                            )
-                        optimizers[t_stage].step()
-                        per_stage_losses.append(loss_t.item())
-
-                    bs = blur.shape[0]
-                    total_loss_val = sum(per_stage_losses)
-                    train_loss_sum_local += total_loss_val * bs
-                    train_count_local += bs
-
-                    if is_main_process() and step % tc["log_every"] == 0:
-                        logger.info(
-                            f"[Train] E{epoch} S{step} "
-                            f"total_loss={total_loss_val:.5f} "
-                            f"stage_losses={[f'{l:.4f}' for l in per_stage_losses]}"
-                        )
+                    prev_freeze_boundary = last_frozen
+                avg_loss = train_one_epoch_gradually_freeze(
+                    ctx, train_loader, epoch, last_frozen,
+                )
 
             # ── Scheduler step ─────────────────────────────────
             if stage_wise_mode == "gradual_in_epoch":
@@ -879,22 +788,8 @@ def main():
                 if scheduler is not None:
                     scheduler.step()
 
-            train_loss_sum_tensor = torch.tensor(train_loss_sum_local, device=device, dtype=torch.float64)
-            train_count_tensor = torch.tensor(train_count_local, device=device, dtype=torch.float64)
-
-            if use_ddp:
-                dist.all_reduce(train_loss_sum_tensor, op=dist.ReduceOp.SUM)
-                dist.all_reduce(train_count_tensor, op=dist.ReduceOp.SUM)
-
-            avg_loss = (train_loss_sum_tensor / train_count_tensor.clamp_min(1.0)).item()
             elapsed = time.time() - t0
             current_lr = optimizer.param_groups[0]["lr"]
-
-            # Extra checkpoint kwargs for gradual_in_epoch
-            _ckpt_extra_kw: dict = {}
-            if stage_wise_mode == "gradual_in_epoch" and optimizers is not None:
-                _ckpt_extra_kw["optimizers"] = optimizers
-                _ckpt_extra_kw["schedulers"] = schedulers
 
             if is_main_process():
                 logger.info(
@@ -1048,12 +943,51 @@ def main():
             logger.info(f"Training done. Best val PSNR: {best_psnr:.2f} dB")
             logger.info(f"Checkpoints in: {train_dir.resolve()}")
 
+        # ── Tail-align phase (optional) ─────────────────────────
+        if tc.get("tail_align", False) and stage_wise_mode != "end2end":
+            # Update ctx tracking state with latest values
+            ctx.best_psnr = best_psnr
+            ctx.best_val_loss = best_val_loss
+            ctx.no_improve_count = no_improve_count
+
+            def _save_ckpt_for_tail(path, extra=None):
+                save_checkpoint(
+                    path,
+                    model=model,
+                    criterion=criterion,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=tc["epochs"],
+                    best_psnr=ctx.best_psnr,
+                    best_val_loss=ctx.best_val_loss,
+                    no_improve_count=ctx.no_improve_count,
+                    cfg=cfg,
+                    extra=extra,
+                    **_ckpt_extra_kw,
+                )
+
+            run_tail_align(
+                ctx=ctx,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                train_sampler=train_sampler,
+                save_checkpoint_fn=_save_ckpt_for_tail,
+                is_main=is_main_process(),
+            )
+            # Recover updated best_psnr from ctx
+            best_psnr = ctx.best_psnr
+
+            if is_main_process():
+                logger.info(f"Final best PSNR (incl. tail-align): {best_psnr:.2f} dB")
+
         # ── Auto test ───────────────────────────────────────────
         if use_ddp:
             dist.barrier()
             
         should_run_test = tc.get("run_test_after_train", True) and is_main_process()
-        best_ckpt = train_dir / "best.pth"
+        # Prefer tail-align best if it exists, else fall back to main best
+        best_tail = train_dir / "best_tail_align.pth"
+        best_ckpt = best_tail if best_tail.exists() else train_dir / "best.pth"
 
         # 在测试前先退出 DDP，避免其他 rank 在 barrier/collective 中等待超时
         cleanup_ddp()
