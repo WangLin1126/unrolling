@@ -2,11 +2,11 @@
 
 data:
   dataset_type: "synthetic"          # "synthetic" | "precomputed"
-  train_image_dir: ""                # directory with clean training images
+  train_image_dir: "/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_train_256_random_5/"                # directory with clean training images
   train_kernel_dir: ""               # optional: directory with motion kernel images
-  test_dir: ""                       # directory with blurred/sharp/kernel subdirs
+  test_dir: "/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_valid_256_random_5/"                       # directory with blurred/sharp/kernel subdirs
   image_channels: 1                  # 1 for grayscale, 3 for RGB
-  batch_size: 16
+  batch_size: 128
   num_workers: 12
 
   # Synthetic dataset parameters
@@ -46,19 +46,19 @@ loss:
 
 train:
   epochs: 200
-  lr: 1.0e-4
+  lr: 5.0e-4
   scheduler: "step"                  # "step" | "cosine"
   step_size: 50                      # StepLR: decay every N epochs
   gamma: 0.5                         # StepLR: decay factor
   grad_clip_theta: 0.001             # gradient clipping: max_grad = theta / lr
   seed: 42
   gpus: "0"                          # e.g. "0,1,2,3"
-  log_every: 20                      # log every N iterations
+  log_every: 10                      # log every N iterations
   val_every: 1                       # validate every N epochs
-  save_every: 1                      # save checkpoint every N epochs
+  save_every: 10                      # save checkpoint every N epochs
 
 test:
-  batch_size: 1
+  batch_size: 8
   save_images: true
   remove_small_objects: true
   min_object_size: 8                 # minimum connected component size in kernel

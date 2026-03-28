@@ -21,7 +21,7 @@ NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
-CHECKPOINT="null"
+CHECKPOINT="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/results/DIV2K/cats_freq-df-geomT10-hqs-dncnn-inner1-blur_4-noise_0.1_0.1-beta_constant-filter_gaussian/20260323_144649/train/last.pth"
 TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
@@ -36,9 +36,9 @@ INNER_ITERS=1
 # constant | geom | geom_inc | geom_dec | dpir
 BETA_MODES=("constant")
 # ("cats_freq" "cats_operator" "cats_residual" "cats_combined")
-LOSS_MODES=("cats_combined")
+LOSS_MODES=("cats_freq")
 # Difficulty schedule: how d(t) grows from 0 → 1 across stages
-DIFFICULTY_SCHEDULE="power"      # "linear" | "power" | "geom" | "trainable"
+DIFFICULTY_SCHEDULE="geom"      # "linear" | "power" | "geom" | "trainable"
 DIFFICULTY_GAMMA=2.0             # exponent for "power" schedule (>1 = slow start)
 DIFFICULTY_R=0.7                 # ratio for "geom" schedule
 # Frequency filter type for cats_freq / cats_combined

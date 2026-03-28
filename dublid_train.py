@@ -14,8 +14,7 @@ Usage:
     python dublid/train.py --config dublid/configs/motion_blur.yaml
 
     # Multi-GPU:
-    torchrun --standalone --nproc_per_node=2 dublid/train.py \\
-        --config dublid/configs/motion_blur.yaml
+    torchrun --standalone --nproc_per_node=2 dublid/train.py --config dublid/configs/motion_blur.yaml
 
     # With CLI overrides:
     python dublid/train.py --config dublid/configs/gaussian_blur.yaml \\

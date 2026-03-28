@@ -71,10 +71,11 @@ def build_cats_exp_dir(cfg: dict, base: str = "results") -> Path:
     tc = cfg["train"]
     dataset_name = dc.get("dataset_name", "DIV2K")
     denoiser = mc["denoiser"]
-    dk = mc["denoiser_kwargs"][denoiser]
+    df= tc['cts_kwargs']['difficulty_schedule']
     params = (
         f"{tc.get('loss_mode', 'all')}"
-        f"T{mc['T']}"
+        f"-df-{df}"
+        f"-T{mc['T']}"
         f"-{mc['solver']}"
         f"-{denoiser}"
         f"-inner{mc.get('inner_iters', 1)}"
