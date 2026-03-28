@@ -102,6 +102,7 @@ train:
   gpus: "0"                     # e.g. "0,1,2,3"
   loss_mode: "all"              # "all" | "last" | "one_stage" | "blur_last"
                                 # CATS modes: "cats_freq" | "cats_operator" | "cats_residual" | "cats_combined"
+  stage_wise_train: "end2end"   # "end2end" | "one_then_another" | "gradual_in_epoch"
   # ── CATS (Continuation-Aware Trajectory Supervision) ──
   cts_kwargs:
     difficulty_schedule: "power"  # "linear" | "power" | "geom" | "trainable"

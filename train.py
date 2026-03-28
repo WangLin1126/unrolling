@@ -37,6 +37,13 @@ from torch.utils.data.distributed import DistributedSampler
 from datasets.synth_deblur import SyntheticNonBlindDeblur, BlurConfig
 from models.unrolled_net import UnrolledDeblurNet
 from utils.losses import build_combined_loss, StagewiseLoss
+from utils.stage_training import (
+    get_active_stage,
+    freeze_denoisers_except,
+    unfreeze_all_denoisers,
+    build_per_stage_optimizers,
+    build_per_stage_schedulers,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -337,6 +344,8 @@ def save_checkpoint(
     no_improve_count: int,
     cfg: dict,
     extra: dict | None = None,
+    optimizers: list[torch.optim.Optimizer] | None = None,
+    schedulers: list | None = None,
 ):
     raw_model = unwrap_model(model)
     raw_criterion = unwrap_model(criterion)
@@ -354,6 +363,12 @@ def save_checkpoint(
         "rng_state": get_rng_state(),
         "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    # Per-stage optimisers/schedulers for gradual_in_epoch
+    if optimizers is not None:
+        payload["optimizers"] = [opt.state_dict() for opt in optimizers]
+    if schedulers is not None:
+        payload["schedulers"] = [sch.state_dict() for sch in schedulers]
+
     if extra:
         payload.update(extra)
 
@@ -548,8 +563,30 @@ def main():
             cts_kwargs=tc.get("cts_kwargs", None),
         ).to(device)
 
+        # ── Stage-wise training mode ────────────────────────────
+        stage_wise_mode = tc.get("stage_wise_train", "end2end")
+        if stage_wise_mode not in ("end2end", "one_then_another", "gradual_in_epoch"):
+            raise ValueError(
+                f"Unknown stage_wise_train mode '{stage_wise_mode}'. "
+                "Choose from: end2end, one_then_another, gradual_in_epoch"
+            )
+        if stage_wise_mode != "end2end" and mc.get("share_denoisers", False):
+            raise ValueError(
+                "Stage-wise training (one_then_another / gradual_in_epoch) "
+                "is incompatible with share_denoisers=True."
+            )
+        if is_main_process():
+            logger.info(f"Stage-wise training mode: {stage_wise_mode}")
+
         if use_ddp:
-            model = DDP(model, device_ids=[local_rank], output_device=local_rank, broadcast_buffers=False)
+            ddp_kwargs = dict(
+                device_ids=[local_rank],
+                output_device=local_rank,
+                broadcast_buffers=False,
+            )
+            if stage_wise_mode == "gradual_in_epoch":
+                ddp_kwargs["find_unused_parameters"] = True
+            model = DDP(model, **ddp_kwargs)
 
             criterion_has_params = any(p.requires_grad for p in criterion.parameters())
             if criterion_has_params:
@@ -569,21 +606,45 @@ def main():
             logger.info(f"Trainable params: {n_params:,}")
 
         # ── Optimizer / Scheduler ───────────────────────────────
-        all_params = list(model.parameters()) + list(criterion.parameters())
-        optimizer = torch.optim.AdamW(
-            all_params, lr=tc["lr"], weight_decay=tc["weight_decay"]
-        )
+        # For gradual_in_epoch we use T independent optimisers/schedulers;
+        # for end2end and one_then_another a single one suffices.
+        optimizers: list[torch.optim.Optimizer] | None = None
+        schedulers: list | None = None
 
-        if tc["scheduler"] == "cosine":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=tc["epochs"]
+        if stage_wise_mode == "gradual_in_epoch":
+            raw = unwrap_model(model)
+            raw_crit = unwrap_model(criterion)
+            optimizers = build_per_stage_optimizers(
+                raw, raw_crit, lr=tc["lr"],
+                weight_decay=tc["weight_decay"], T=T,
             )
-        elif tc["scheduler"] == "step":
-            scheduler = torch.optim.lr_scheduler.StepLR(
-                optimizer, step_size=tc["step_size"], gamma=tc["gamma"]
+            schedulers = build_per_stage_schedulers(
+                optimizers,
+                scheduler_name=tc["scheduler"],
+                total_epochs=tc["epochs"],
+                step_size=tc.get("step_size", 50),
+                gamma=tc.get("gamma", 0.5),
             )
+            # Placeholders so the rest of the code doesn't need guards
+            optimizer = optimizers[0]
+            scheduler = schedulers[0] if schedulers else None
+            all_params = list(model.parameters()) + list(criterion.parameters())
         else:
-            scheduler = None
+            all_params = list(model.parameters()) + list(criterion.parameters())
+            optimizer = torch.optim.AdamW(
+                all_params, lr=tc["lr"], weight_decay=tc["weight_decay"]
+            )
+
+            if tc["scheduler"] == "cosine":
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=tc["epochs"]
+                )
+            elif tc["scheduler"] == "step":
+                scheduler = torch.optim.lr_scheduler.StepLR(
+                    optimizer, step_size=tc["step_size"], gamma=tc["gamma"]
+                )
+            else:
+                scheduler = None
 
         # ── Resume ──────────────────────────────────────────────
         start_epoch = 1
@@ -605,6 +666,16 @@ def main():
                 device=device,
                 logger=logger,
             )
+            # Restore per-stage optimisers/schedulers for gradual_in_epoch
+            if stage_wise_mode == "gradual_in_epoch" and "optimizers" in ckpt:
+                for i, opt in enumerate(optimizers):
+                    if i < len(ckpt["optimizers"]):
+                        opt.load_state_dict(ckpt["optimizers"][i])
+                if schedulers and "schedulers" in ckpt:
+                    for i, sch in enumerate(schedulers):
+                        if i < len(ckpt["schedulers"]):
+                            sch.load_state_dict(ckpt["schedulers"][i])
+
             start_epoch = int(ckpt.get("epoch", 0)) + 1
             best_psnr = float(ckpt.get("best_psnr", 0.0))
             best_val_loss = float(ckpt.get("best_val_loss", float("inf")))
@@ -628,12 +699,27 @@ def main():
         # ── Training loop ───────────────────────────────────────
         early_stop_flag = False
 
+        prev_active_stage = -1  # track stage transitions for one_then_another
+
         for epoch in range(start_epoch, tc["epochs"] + 1):
             if train_sampler is not None:
                 train_sampler.set_epoch(epoch)
 
             model.train()
             criterion.train()
+
+            # ── Per-epoch setup for one_then_another ───────────
+            if stage_wise_mode == "one_then_another":
+                cur_active = get_active_stage(epoch, tc["epochs"], T)
+                raw_model = unwrap_model(model)
+                freeze_denoisers_except(raw_model, cur_active)
+                if cur_active != prev_active_stage:
+                    if is_main_process():
+                        logger.info(
+                            f"[one_then_another] Epoch {epoch}: "
+                            f"active denoiser stage = {cur_active}"
+                        )
+                    prev_active_stage = cur_active
 
             t0 = time.time()
             train_loss_sum_local = 0.0
@@ -646,41 +732,152 @@ def main():
                 noise_sigmas = noise_sigmas.to(device, non_blocking=True)
                 if use_precomputed:
                     targets_gpu = [t.to(device, non_blocking=True) for t in targets]
-                    result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
-                else:
-                    result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
 
-                if use_cats:
-                    loss, info = criterion(
-                        result["stage_outputs"], result["stage_targets"],
-                        x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+                # ────────────────────────────────────────────────
+                # MODE: end2end  (original behaviour)
+                # ────────────────────────────────────────────────
+                if stage_wise_mode == "end2end":
+                    if use_precomputed:
+                        result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
+                    else:
+                        result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
+
+                    if use_cats:
+                        loss, info = criterion(
+                            result["stage_outputs"], result["stage_targets"],
+                            x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+                        )
+                    else:
+                        loss, info = criterion(result["stage_outputs"], result["stage_targets"])
+
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+
+                    if tc["grad_clip"] > 0:
+                        nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
+                    optimizer.step()
+
+                    bs = blur.shape[0]
+                    train_loss_sum_local += loss.item() * bs
+                    train_count_local += bs
+
+                    if is_main_process() and step % tc["log_every"] == 0:
+                        w_str = ", ".join(f"{w:.3f}" for w in info["weights"])
+                        logger.info(
+                            f"[Train] E{epoch} S{step} "
+                            f"loss={loss.item():.5f} "
+                            f"stage_losses={[f'{l:.4f}' for l in info['per_stage_loss']]} "
+                            f"weights=[{w_str}]"
+                        )
+
+                # ────────────────────────────────────────────────
+                # MODE: one_then_another
+                # ────────────────────────────────────────────────
+                elif stage_wise_mode == "one_then_another":
+                    if use_precomputed:
+                        result = model(
+                            blur=blur, blur_sigma=blur_sigmas,
+                            noise_sigma=noise_sigmas, x_gt=None,
+                            precomputed_targets=targets_gpu,
+                            max_stage=cur_active,
+                            active_stage=cur_active,
+                        )
+                    else:
+                        result = model(
+                            blur=blur, blur_sigma=blur_sigmas,
+                            noise_sigma=noise_sigmas, x_gt=sharp,
+                            precomputed_targets=None,
+                            max_stage=cur_active,
+                            active_stage=cur_active,
+                        )
+
+                    # Single-stage loss: compare last output to its target
+                    raw_crit = unwrap_model(criterion)
+                    loss = raw_crit.base_loss(
+                        result["stage_outputs"][-1],
+                        result["stage_targets"][-1],
                     )
-                else:
-                    loss, info = criterion(result["stage_outputs"], result["stage_targets"])
 
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
 
-                if tc["grad_clip"] > 0:
-                    nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
+                    if tc["grad_clip"] > 0:
+                        nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
+                    optimizer.step()
 
-                optimizer.step()
+                    bs = blur.shape[0]
+                    train_loss_sum_local += loss.item() * bs
+                    train_count_local += bs
 
-                bs = blur.shape[0]
-                train_loss_sum_local += loss.item() * bs
-                train_count_local += bs
+                    if is_main_process() and step % tc["log_every"] == 0:
+                        logger.info(
+                            f"[Train] E{epoch} S{step} "
+                            f"stage={cur_active} "
+                            f"loss={loss.item():.5f}"
+                        )
 
-                if is_main_process() and step % tc["log_every"] == 0:
-                    w_str = ", ".join(f"{w:.3f}" for w in info["weights"])
-                    logger.info(
-                        f"[Train] E{epoch} S{step} "
-                        f"loss={loss.item():.5f} "
-                        f"stage_losses={[f'{l:.4f}' for l in info['per_stage_loss']]} "
-                        f"weights=[{w_str}]"
-                    )
+                # ────────────────────────────────────────────────
+                # MODE: gradual_in_epoch
+                # ────────────────────────────────────────────────
+                elif stage_wise_mode == "gradual_in_epoch":
+                    raw_model = unwrap_model(model)
+                    raw_crit = unwrap_model(criterion)
+                    per_stage_losses: list[float] = []
 
-            if scheduler is not None:
-                scheduler.step()
+                    for t_stage in range(T):
+                        optimizers[t_stage].zero_grad(set_to_none=True)
+
+                        if use_precomputed:
+                            result = model(
+                                blur=blur, blur_sigma=blur_sigmas,
+                                noise_sigma=noise_sigmas, x_gt=None,
+                                precomputed_targets=targets_gpu,
+                                max_stage=t_stage,
+                                active_stage=t_stage,
+                            )
+                        else:
+                            result = model(
+                                blur=blur, blur_sigma=blur_sigmas,
+                                noise_sigma=noise_sigmas, x_gt=sharp,
+                                precomputed_targets=None,
+                                max_stage=t_stage,
+                                active_stage=t_stage,
+                            )
+
+                        loss_t = raw_crit.base_loss(
+                            result["stage_outputs"][-1],
+                            result["stage_targets"][-1],
+                        )
+                        loss_t.backward()
+
+                        if tc["grad_clip"] > 0:
+                            nn.utils.clip_grad_norm_(
+                                list(raw_model.denoisers[t_stage].parameters()),
+                                tc["grad_clip"],
+                            )
+                        optimizers[t_stage].step()
+                        per_stage_losses.append(loss_t.item())
+
+                    bs = blur.shape[0]
+                    total_loss_val = sum(per_stage_losses)
+                    train_loss_sum_local += total_loss_val * bs
+                    train_count_local += bs
+
+                    if is_main_process() and step % tc["log_every"] == 0:
+                        logger.info(
+                            f"[Train] E{epoch} S{step} "
+                            f"total_loss={total_loss_val:.5f} "
+                            f"stage_losses={[f'{l:.4f}' for l in per_stage_losses]}"
+                        )
+
+            # ── Scheduler step ─────────────────────────────────
+            if stage_wise_mode == "gradual_in_epoch":
+                if schedulers:
+                    for sch in schedulers:
+                        sch.step()
+            else:
+                if scheduler is not None:
+                    scheduler.step()
 
             train_loss_sum_tensor = torch.tensor(train_loss_sum_local, device=device, dtype=torch.float64)
             train_count_tensor = torch.tensor(train_count_local, device=device, dtype=torch.float64)
@@ -692,6 +889,12 @@ def main():
             avg_loss = (train_loss_sum_tensor / train_count_tensor.clamp_min(1.0)).item()
             elapsed = time.time() - t0
             current_lr = optimizer.param_groups[0]["lr"]
+
+            # Extra checkpoint kwargs for gradual_in_epoch
+            _ckpt_extra_kw: dict = {}
+            if stage_wise_mode == "gradual_in_epoch" and optimizers is not None:
+                _ckpt_extra_kw["optimizers"] = optimizers
+                _ckpt_extra_kw["schedulers"] = schedulers
 
             if is_main_process():
                 logger.info(
@@ -713,6 +916,7 @@ def main():
                     no_improve_count=no_improve_count,
                     cfg=cfg,
                     extra={"tag": "last"},
+                    **_ckpt_extra_kw,
                 )
 
             # ── Validation ──────────────────────────────────────
@@ -782,6 +986,7 @@ def main():
                             no_improve_count=no_improve_count,
                             cfg=cfg,
                             extra={"tag": "best_by_psnr"},
+                            **_ckpt_extra_kw,
                         )
                         logger.info(f"Saved best checkpoint: best.pth (PSNR={best_psnr:.2f})")
 
@@ -809,6 +1014,7 @@ def main():
                             no_improve_count=no_improve_count,
                             cfg=cfg,
                             extra={"tag": f"epoch_{epoch}"},
+                            **_ckpt_extra_kw,
                         )
                         logger.info(f"Saved periodic checkpoint: ckpt_e{epoch}.pth")
 
@@ -826,6 +1032,7 @@ def main():
                             no_improve_count=no_improve_count,
                             cfg=cfg,
                             extra={"early_stopped": True, "tag": "early_stop"},
+                            **_ckpt_extra_kw,
                         )
                         early_stop_flag = True
 
@@ -874,6 +1081,10 @@ def main():
             try:
                 # only main process saves crash checkpoint to avoid file collisions
                 if is_main_process() and "train_dir" in locals():
+                    _crash_kw: dict = {}
+                    if locals().get("optimizers") is not None:
+                        _crash_kw["optimizers"] = locals()["optimizers"]
+                        _crash_kw["schedulers"] = locals().get("schedulers")
                     save_checkpoint(
                         train_dir / "crash.pth",
                         model=locals()["model"],
@@ -890,6 +1101,7 @@ def main():
                             "exception": repr(e),
                             "traceback": traceback.format_exc(),
                         },
+                        **_crash_kw,
                     )
                     logger.info(f"Saved crash checkpoint to: {train_dir / 'crash.pth'}")
             except Exception:
