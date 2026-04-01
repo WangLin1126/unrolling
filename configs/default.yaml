@@ -44,8 +44,8 @@ model:
       num_heads: 2
       window_size: 8
     restormer:
-      mid_channels: 48
-      num_levels: 3
+      mid_channels: 16
+      num_levels: 2
       num_blocks: 2
       num_heads: 2
       ffn_expansion: 2.66
@@ -111,7 +111,7 @@ train:
     gamma: 2.0                   # power-law exponent (for "power" schedule)
     r: 0.7                       # geometric ratio (for "geom" schedule)
     filter_type: "gaussian"      # "gaussian" | "butterworth" | "ideal"
-    residual_weight: 0.0         # weight for residual loss in cats_combined
+    residual_weight: 0.5         # weight for residual loss in cats_combined
     lambda_final: 0.0            # extra weight on final-stage clean-GT loss
 
 # Testing

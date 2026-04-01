@@ -563,6 +563,7 @@ def main():
     )
     parser.add_argument("--test.batch_size", dest="test_batch_size", type=int, default=None)
     parser.add_argument("--test.num_workers", dest="test_num_workers", type=int, default=None)
+    parser.add_argument("--test.glob", dest="test_glob", type=str, default=None)
     args = parser.parse_args()
 
     cfg = load_yaml_config(args.config)
@@ -577,7 +578,8 @@ def main():
         cfg.setdefault("test", {})["batch_size"] = args.test_batch_size
     if args.test_num_workers is not None:
         cfg.setdefault("test", {})["num_workers"] = args.test_num_workers
-
+    if args.test_glob is not None:
+        cfg.setdefault("data", {})["test_glob"] = args.test_glob
     exp_dir = Path(args.exp_dir) if args.exp_dir is not None else infer_test_dir_from_checkpoint(args.checkpoint)
     run_evaluate(cfg, args.checkpoint, exp_dir)
 

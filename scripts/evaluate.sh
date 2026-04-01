@@ -9,9 +9,9 @@ TEST_BATCH_SIZE=8
 TEST_NUM_WORKERS=8
 
 CHECKPOINTS=(
-/inspire/hdd/global_user/gexinmu-253108100065/wl/unrolling_deblur/results/DIV2K/T10-hqs-drunet-inner1-blur_sigma_uniform_4-noise_sigma_0.1_0.1-beta_geom-lossw_uniform-lmode_all/20260314_103535/train/best.pth
+/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/results/DIV2K/cats_freq-df-power-T12-hqs-restormer-inner1-blur_4-noise_0.1_0.1-beta_constant-filter_gaussian/20260330_152941/train/best_tail_align.pth
 )
-
+test_glob=None
 for CKPT in "${CHECKPOINTS[@]}"; do
     if [[ ! -f "${CKPT}" ]]; then
         echo "Skip missing checkpoint: ${CKPT}"
@@ -33,7 +33,7 @@ for CKPT in "${CHECKPOINTS[@]}"; do
         --checkpoint "${CKPT}" \
         --prefer_ckpt_config \
         --test.batch_size "${TEST_BATCH_SIZE}" \
-        --test.num_workers "${TEST_NUM_WORKERS}"
+        --test.num_workers "${TEST_NUM_WORKERS}" \
 
 done
 

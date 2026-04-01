@@ -22,28 +22,29 @@ NOISE_SIGMA_MAX=0.1
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
 CHECKPOINT="null"
-TS=(10)
+TS=(12)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
 # geom | power | uniform | trainable
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
-DENOISERS=("dncnn")
+DENOISERS=("restormer")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
-# all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("all")
+# all: gradual change | last: all compare last stage | one_stage: only compute last stage loss 
+# ("cats_freq" "cats_operator" "cats_residual" "cats_combined")
+LOSS_MODES=("cats_freq")
 # constant | geom | geom_inc | geom_dec | dpir
-BETA_MODES=("geom")
+BETA_MODES=("constant")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=24
-LR=2e-4
+BATCH_SIZE_PER_GPU=8
+LR=1e-3
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
 STEP_SIZE=50

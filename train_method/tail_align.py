@@ -50,7 +50,7 @@ def run_tail_align(
     tc = ctx.cfg["train"]
     total_epochs = tc["epochs"]
     tail_epochs = max(total_epochs // 10, 1)
-    tail_lr = tc.get("tail_align_lr", tc["lr"] * 0.1)
+    tail_lr = tc.get("tail_align_lr") or tc["lr"] * 0.1
 
     if is_main:
         ctx.logger.info(
