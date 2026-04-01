@@ -104,7 +104,7 @@ train:
                                 # CATS modes: "cats_freq" | "cats_operator" | "cats_residual" | "cats_combined"
   stage_wise_train: "gradually_freeze"   # "end2end" | "one_then_another" | "gradual_in_epoch" | "gradually_freeze"
   tail_align: True              # if true, append fine-tuning phase with small LR after stage-wise training
-  tail_align_lr: null            # LR for tail-align (default: lr * 0.1)
+  tail_align_lr: 1e-5            # LR for tail-align (default: lr * 0.1)
   # ── CATS (Continuation-Aware Trajectory Supervision) ──
   cts_kwargs:
     difficulty_schedule: "power"  # "linear" | "power" | "geom" | "trainable"

@@ -260,7 +260,7 @@ class StagewiseLoss(nn.Module):
 
             # ── CATS-Freq: frequency-progressive supervision ──
             elif self.mode == "cats_freq":
-                cutoff = cutoffs[t].item()
+                cutoff = cutoffs[self.T-t-1].item()
                 pred_lpf = apply_lpf(stage_outputs[t], cutoff, self._cts_filter_type)
                 gt_lpf = apply_lpf(x_gt, cutoff, self._cts_filter_type)
                 l_t = self.base_loss(pred_lpf, gt_lpf)
@@ -283,7 +283,7 @@ class StagewiseLoss(nn.Module):
 
             # ── CATS-Combined: Freq primary + Residual auxiliary ──
             elif self.mode == "cats_combined":
-                cutoff = cutoffs[t].item()
+                cutoff = cutoffs[self.T-t-1].item()
                 pred_lpf = apply_lpf(stage_outputs[t], cutoff, self._cts_filter_type)
                 gt_lpf = apply_lpf(x_gt, cutoff, self._cts_filter_type)
                 l_primary = self.base_loss(pred_lpf, gt_lpf)
@@ -293,7 +293,7 @@ class StagewiseLoss(nn.Module):
                 else:
                     delta_pred = stage_outputs[t] - stage_outputs[t - 1]
                     delta_gt = apply_lpf(x_gt, cutoff, self._cts_filter_type) \
-                        - apply_lpf(x_gt, cutoffs[t - 1].item(), self._cts_filter_type)
+                        - apply_lpf(x_gt, cutoffs[self.T - t].item(), self._cts_filter_type)
                     l_residual = self.base_loss(delta_pred, delta_gt)
                     l_t = l_primary + self._cts_residual_weight * l_residual
 

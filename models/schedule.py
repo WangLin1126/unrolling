@@ -99,9 +99,9 @@ class PowerBlurSchedule(BlurSigmaSchedule):
     def _compute_alpha(self, device, dtype):
         t = self._t_idx.to(dtype=dtype)
         if self.front_heavy:
-            w = (self.T - t) ** self.p
-        else:
             w = (t + 1) ** self.p
+        else:
+            w = (self.T - t) ** self.p
         return w / (w.sum() + _EPS)
 
 
@@ -204,7 +204,7 @@ class ConstantBetaSchedule(BetaSchedule):
 
 class GeomBetaSchedule(BetaSchedule):
     """Geometric interpolation between beta_min and beta_max."""
-
+    "at start we need small beta to recover data item, at last, turn to regularization item"
     def __init__(self, T: int, beta_min: float = 0.5, beta_max: float = 64.0,
                  decreasing: bool = False):
         super().__init__(T)
