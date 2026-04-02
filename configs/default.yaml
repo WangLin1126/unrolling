@@ -93,6 +93,8 @@ train:
   step_size: 50
   gamma: 0.5
   grad_clip: 1.0
+  amp_enabled: true
+  amp_dtype: "bfloat16"        # "bfloat16" (H200) or "float16" (older GPUs e.g. TITAN)
   seed: 42
   num_workers: 12
   log_every: 20

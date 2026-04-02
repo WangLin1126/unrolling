@@ -5,9 +5,14 @@ updates its own denoiser.
 
 from __future__ import annotations
 
-import torch.nn as nn
-
-from .common import TrainContext, forward_model, compute_criterion_loss
+from .common import (
+    TrainContext,
+    forward_model,
+    compute_criterion_loss,
+    autocast_context,
+    amp_backward,
+    amp_optimizer_step,
+)
 
 
 def train_one_epoch_stage_wise_detached(
@@ -30,18 +35,16 @@ def train_one_epoch_stage_wise_detached(
             if ctx.use_precomputed else None
         )
 
-        result = forward_model(
-            ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu,
-            detach_between_stages=True,
-        )
-        loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
+        with autocast_context(ctx):
+            result = forward_model(
+                ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu,
+                detach_between_stages=True,
+            )
+            loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
 
         ctx.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-
-        if tc["grad_clip"] > 0:
-            nn.utils.clip_grad_norm_(ctx.all_params, tc["grad_clip"])
-        ctx.optimizer.step()
+        amp_backward(ctx, loss)
+        amp_optimizer_step(ctx, ctx.optimizer, ctx.all_params, tc["grad_clip"])
 
         bs = blur.shape[0]
         train_loss_sum += loss.item() * bs

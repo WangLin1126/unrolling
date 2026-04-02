@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 
-from .common import TrainContext, forward_model, unwrap_model
+from .common import (
+    TrainContext,
+    forward_model,
+    unwrap_model,
+    autocast_context,
+    amp_backward,
+    amp_optimizer_step,
+)
 
 
 def train_one_epoch_gradual_in_epoch(
@@ -37,22 +43,22 @@ def train_one_epoch_gradual_in_epoch(
         for t_stage in range(T):
             ctx.optimizers[t_stage].zero_grad(set_to_none=True)
 
-            result = forward_model(
-                ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu,
-                max_stage=t_stage, active_stage=t_stage,
-            )
-            loss_t = raw_crit.base_loss(
-                result["stage_outputs"][-1],
-                result["stage_targets"][-1],
-            )
-            loss_t.backward()
-
-            if tc["grad_clip"] > 0:
-                nn.utils.clip_grad_norm_(
-                    list(raw_model.denoisers[t_stage].parameters()),
-                    tc["grad_clip"],
+            with autocast_context(ctx):
+                result = forward_model(
+                    ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu,
+                    max_stage=t_stage, active_stage=t_stage,
                 )
-            ctx.optimizers[t_stage].step()
+                loss_t = raw_crit.base_loss(
+                    result["stage_outputs"][-1],
+                    result["stage_targets"][-1],
+                )
+            amp_backward(ctx, loss_t)
+            amp_optimizer_step(
+                ctx,
+                ctx.optimizers[t_stage],
+                list(raw_model.denoisers[t_stage].parameters()),
+                tc["grad_clip"],
+            )
             per_stage_losses.append(loss_t.item())
 
         bs = blur.shape[0]

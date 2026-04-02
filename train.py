@@ -51,6 +51,7 @@ from train_method import (
     train_one_epoch_stage_wise_detached,
     run_tail_align,
 )
+from train_method.common import autocast_context
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -355,6 +356,7 @@ def save_checkpoint(
     extra: dict | None = None,
     optimizers: list[torch.optim.Optimizer] | None = None,
     schedulers: list | None = None,
+    grad_scaler: torch.cuda.amp.GradScaler | None = None,
 ):
     raw_model = unwrap_model(model)
     raw_criterion = unwrap_model(criterion)
@@ -377,6 +379,8 @@ def save_checkpoint(
         payload["optimizers"] = [opt.state_dict() for opt in optimizers]
     if schedulers is not None:
         payload["schedulers"] = [sch.state_dict() for sch in schedulers]
+    if grad_scaler is not None:
+        payload["grad_scaler"] = grad_scaler.state_dict()
 
     if extra:
         payload.update(extra)
@@ -391,6 +395,7 @@ def load_checkpoint(
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer | None = None,
     scheduler=None,
+    grad_scaler: torch.cuda.amp.GradScaler | None = None,
     device: torch.device | str = "cpu",
     logger: logging.Logger | None = None,
 ) -> dict:
@@ -417,6 +422,8 @@ def load_checkpoint(
 
         if scheduler is not None and ckpt.get("scheduler") is not None:
             scheduler.load_state_dict(ckpt["scheduler"])
+        if grad_scaler is not None and ckpt.get("grad_scaler") is not None:
+            grad_scaler.load_state_dict(ckpt["grad_scaler"])
 
         if "rng_state" in ckpt:
             try:
@@ -441,6 +448,14 @@ def load_checkpoint(
 # ── Main ────────────────────────────────────────────────────────────
 
 def main():
+    torch.backends.cudnn.benchmark = True
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+        torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.allow_tf32 = True
+
     use_ddp, rank, world_size, local_rank, device = setup_ddp()
 
     logger = None
@@ -456,6 +471,16 @@ def main():
         tc = cfg["train"]
         mc = cfg["model"]
         dc = cfg["data"]
+        amp_enabled = bool(tc.get("amp_enabled", True))
+        amp_dtype_cfg = str(tc.get("amp_dtype", "bfloat16")).lower()
+        if amp_dtype_cfg not in {"bfloat16", "float16"}:
+            raise ValueError("train.amp_dtype must be either 'bfloat16' or 'float16'")
+        amp_dtype = torch.bfloat16 if amp_dtype_cfg == "bfloat16" else torch.float16
+
+        if amp_enabled and device.type != "cuda":
+            amp_enabled = False
+        if amp_enabled and amp_dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+            amp_dtype = torch.float16
 
         seed_everything(tc["seed"] + rank)
 
@@ -526,6 +551,7 @@ def main():
             collate_fn=collate_fn,
             drop_last=True,
             persistent_workers=tc["num_workers"] > 0,
+            prefetch_factor=3 if tc["num_workers"] > 0 else None,
         )
         val_loader = DataLoader(
             val_ds,
@@ -536,6 +562,7 @@ def main():
             pin_memory=True,
             collate_fn=collate_fn,
             persistent_workers=tc["num_workers"] > 0,
+            prefetch_factor=3 if tc["num_workers"] > 0 else None,
         )
 
         if is_main_process():
@@ -612,6 +639,16 @@ def main():
                 f"T={T}"
             )
             logger.info(f"Trainable params: {n_params:,}")
+            logger.info(
+                f"AMP: enabled={amp_enabled}, dtype={str(amp_dtype).split('.')[-1]}"
+            )
+
+        grad_scaler = None
+        if amp_enabled and amp_dtype == torch.float16:
+            if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+                grad_scaler = torch.amp.GradScaler("cuda")
+            else:
+                grad_scaler = torch.cuda.amp.GradScaler()
 
         # ── Optimizer / Scheduler ───────────────────────────────
         # For gradual_in_epoch we use T independent optimisers/schedulers;
@@ -671,6 +708,7 @@ def main():
                 criterion=criterion,
                 optimizer=optimizer,
                 scheduler=scheduler,
+                grad_scaler=grad_scaler,
                 device=device,
                 logger=logger,
             )
@@ -719,6 +757,9 @@ def main():
             use_ddp=use_ddp,
             train_dir=train_dir,
             logger=logger if is_main_process() else None,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+            grad_scaler=grad_scaler,
             optimizers=optimizers,
             schedulers=schedulers,
             best_psnr=best_psnr,
@@ -819,6 +860,7 @@ def main():
                     no_improve_count=no_improve_count,
                     cfg=cfg,
                     extra={"tag": "last"},
+                    grad_scaler=grad_scaler,
                     **_ckpt_extra_kw,
                 )
 
@@ -837,19 +879,20 @@ def main():
                         sharp = sharp.to(device, non_blocking=True)
                         blur_sigmas = blur_sigmas.to(device, non_blocking=True)
                         noise_sigmas = noise_sigmas.to(device, non_blocking=True)
-                        if use_precomputed:
-                            targets_gpu = [t.to(device, non_blocking=True) for t in targets]
-                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
-                        else:
-                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
+                        with autocast_context(ctx):
+                            if use_precomputed:
+                                targets_gpu = [t.to(device, non_blocking=True) for t in targets]
+                                result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
+                            else:
+                                result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
 
-                        if use_cats:
-                            loss_v, _ = criterion(
-                                result["stage_outputs"], result["stage_targets"],
-                                x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
-                            )
-                        else:
-                            loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
+                            if use_cats:
+                                loss_v, _ = criterion(
+                                    result["stage_outputs"], result["stage_targets"],
+                                    x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+                                )
+                            else:
+                                loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
                         val_loss_sum_local += loss_v.item() * blur.shape[0]
 
                         pred = result["pred"]
@@ -889,6 +932,7 @@ def main():
                             no_improve_count=no_improve_count,
                             cfg=cfg,
                             extra={"tag": "best_by_psnr"},
+                            grad_scaler=grad_scaler,
                             **_ckpt_extra_kw,
                         )
                         logger.info(f"Saved best checkpoint: best.pth (PSNR={best_psnr:.2f})")
@@ -917,6 +961,7 @@ def main():
                             no_improve_count=no_improve_count,
                             cfg=cfg,
                             extra={"tag": f"epoch_{epoch}"},
+                            grad_scaler=grad_scaler,
                             **_ckpt_extra_kw,
                         )
                         logger.info(f"Saved periodic checkpoint: ckpt_e{epoch}.pth")
@@ -935,6 +980,7 @@ def main():
                             no_improve_count=no_improve_count,
                             cfg=cfg,
                             extra={"early_stopped": True, "tag": "early_stop"},
+                            grad_scaler=grad_scaler,
                             **_ckpt_extra_kw,
                         )
                         early_stop_flag = True
@@ -971,6 +1017,7 @@ def main():
                     no_improve_count=ctx.no_improve_count,
                     cfg=cfg,
                     extra=extra,
+                    grad_scaler=grad_scaler,
                     **_ckpt_extra_kw,
                 )
 
@@ -1043,6 +1090,7 @@ def main():
                             "exception": repr(e),
                             "traceback": traceback.format_exc(),
                         },
+                        grad_scaler=locals().get("grad_scaler", None),
                         **_crash_kw,
                     )
                     logger.info(f"Saved crash checkpoint to: {train_dir / 'crash.pth'}")

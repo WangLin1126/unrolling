@@ -11,7 +11,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import torch
 import torch.distributed as dist
@@ -150,6 +150,9 @@ class TrainContext:
     use_ddp: bool
     train_dir: Path
     logger: logging.Logger
+    amp_enabled: bool = False
+    amp_dtype: torch.dtype = torch.bfloat16
+    grad_scaler: torch.cuda.amp.GradScaler | None = None
 
     # Optional: per-stage optimisers for gradual_in_epoch
     optimizers: list[torch.optim.Optimizer] | None = None
@@ -201,3 +204,45 @@ def compute_single_stage_loss(ctx: TrainContext, result):
         result["stage_outputs"][-1],
         result["stage_targets"][-1],
     )
+
+
+def autocast_context(ctx: TrainContext):
+    """Return an AMP autocast context that works across PyTorch versions."""
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast(
+            "cuda",
+            enabled=ctx.amp_enabled,
+            dtype=ctx.amp_dtype,
+        )
+    return torch.cuda.amp.autocast(
+        enabled=ctx.amp_enabled,
+        dtype=ctx.amp_dtype,
+    )
+
+
+def amp_backward(ctx: TrainContext, loss: torch.Tensor):
+    """Backward pass with optional GradScaler."""
+    if ctx.grad_scaler is not None:
+        ctx.grad_scaler.scale(loss).backward()
+    else:
+        loss.backward()
+
+
+def amp_optimizer_step(
+    ctx: TrainContext,
+    optimizer: torch.optim.Optimizer,
+    params: Iterable[torch.nn.Parameter],
+    grad_clip: float,
+):
+    """Optimizer step with optional unscale+clip+GradScaler update."""
+    if ctx.grad_scaler is not None:
+        if grad_clip > 0:
+            ctx.grad_scaler.unscale_(optimizer)
+            nn.utils.clip_grad_norm_(params, grad_clip)
+        ctx.grad_scaler.step(optimizer)
+        ctx.grad_scaler.update()
+        return
+
+    if grad_clip > 0:
+        nn.utils.clip_grad_norm_(params, grad_clip)
+    optimizer.step()

@@ -14,7 +14,6 @@ The last denoiser is *never* frozen so training is always meaningful.
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 
 from .common import (
     TrainContext,
@@ -25,6 +24,9 @@ from .common import (
     unfreeze_all_denoisers,
     get_freeze_boundary,
     unwrap_model,
+    autocast_context,
+    amp_backward,
+    amp_optimizer_step,
 )
 
 
@@ -73,15 +75,13 @@ def train_one_epoch_gradually_freeze(
         # Full forward pass through all T stages.  Frozen denoisers still
         # execute (needed for correct input to later stages) but their
         # parameters don't accumulate gradients.
-        result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
-        loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
+        with autocast_context(ctx):
+            result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
+            loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
 
         ctx.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-
-        if tc["grad_clip"] > 0:
-            nn.utils.clip_grad_norm_(ctx.all_params, tc["grad_clip"])
-        ctx.optimizer.step()
+        amp_backward(ctx, loss)
+        amp_optimizer_step(ctx, ctx.optimizer, ctx.all_params, tc["grad_clip"])
 
         bs = blur.shape[0]
         train_loss_sum += loss.item() * bs

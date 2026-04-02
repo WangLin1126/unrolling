@@ -13,7 +13,6 @@ import logging
 import numpy as np
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 
 from .common import (
     TrainContext,
@@ -21,6 +20,9 @@ from .common import (
     compute_criterion_loss,
     unfreeze_all_denoisers,
     unwrap_model,
+    autocast_context,
+    amp_backward,
+    amp_optimizer_step,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,15 +97,13 @@ def run_tail_align(
                 if ctx.use_precomputed else None
             )
 
-            result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
-            loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
+            with autocast_context(ctx):
+                result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
+                loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
 
             tail_optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-
-            if tc["grad_clip"] > 0:
-                nn.utils.clip_grad_norm_(all_params, tc["grad_clip"])
-            tail_optimizer.step()
+            amp_backward(ctx, loss)
+            amp_optimizer_step(ctx, tail_optimizer, all_params, tc["grad_clip"])
 
             bs = blur.shape[0]
             train_loss_sum_local += loss.item() * bs
@@ -151,7 +151,8 @@ def run_tail_align(
                         [t.to(ctx.device, non_blocking=True) for t in targets]
                         if ctx.use_precomputed else None
                     )
-                    result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
+                    with autocast_context(ctx):
+                        result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
                     pred = result["pred"]
                     for i in range(pred.shape[0]):
                         val_psnr_sum += _psnr(pred[i], sharp[i])
