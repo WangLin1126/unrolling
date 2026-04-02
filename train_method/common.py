@@ -164,19 +164,22 @@ class TrainContext:
 # ── Reusable building blocks ─────────────────────────────────────────
 
 def forward_model(ctx: TrainContext, blur, blur_sigmas, noise_sigmas, sharp,
-                  targets_gpu, *, max_stage=None, active_stage=None):
+                  targets_gpu, *, max_stage=None, active_stage=None,
+                  detach_between_stages=False):
     """Run the model forward, handling precomputed vs on-the-fly targets."""
     if ctx.use_precomputed:
         return ctx.model(
             blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas,
             x_gt=None, precomputed_targets=targets_gpu,
             max_stage=max_stage, active_stage=active_stage,
+            detach_between_stages=detach_between_stages,
         )
     else:
         return ctx.model(
             blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas,
             x_gt=sharp, precomputed_targets=None,
             max_stage=max_stage, active_stage=active_stage,
+            detach_between_stages=detach_between_stages,
         )
 
 

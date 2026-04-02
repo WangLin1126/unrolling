@@ -5,6 +5,7 @@ Available strategies (``stage_wise_train`` config key):
   - one_then_another: train one denoiser per fixed epoch budget
   - gradual_in_epoch: T independent forward-backward passes per batch
   - gradually_freeze: all denoisers → progressively freeze earlier ones
+  - stage_wise_detached: end-to-end forward but detach between stages
 
 Optional post-training phase (``tail_align`` config key):
   - tail_align: fine-tune all denoisers with small LR for distribution alignment
@@ -32,6 +33,7 @@ from .gradually_freeze import (
     setup_gradually_freeze,
     train_one_epoch_gradually_freeze,
 )
+from .stage_wise_detached import train_one_epoch_stage_wise_detached
 from .tail_align import run_tail_align
 
 VALID_MODES = frozenset({
@@ -39,6 +41,7 @@ VALID_MODES = frozenset({
     "one_then_another",
     "gradual_in_epoch",
     "gradually_freeze",
+    "stage_wise_detached",
 })
 
 __all__ = [
@@ -51,6 +54,7 @@ __all__ = [
     "train_one_epoch_gradual_in_epoch",
     "setup_gradually_freeze",
     "train_one_epoch_gradually_freeze",
+    "train_one_epoch_stage_wise_detached",
     "run_tail_align",
     # helpers
     "unwrap_model",

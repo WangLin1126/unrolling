@@ -102,7 +102,7 @@ train:
   gpus: "0"                     # e.g. "0,1,2,3"
   loss_mode: "all"              # "all" | "last" | "one_stage" | "blur_last"
                                 # CATS modes: "cats_freq" | "cats_operator" | "cats_residual" | "cats_combined"
-  stage_wise_train: "gradually_freeze"   # "end2end" | "one_then_another" | "gradual_in_epoch" | "gradually_freeze"
+  stage_wise_train: "gradually_freeze"   # "end2end" | "one_then_another" | "gradual_in_epoch" | "gradually_freeze" | "stage_wise_detached"
   tail_align: True              # if true, append fine-tuning phase with small LR after stage-wise training
   tail_align_lr: 1.0e-5            # LR for tail-align (default: lr * 0.1)
   # ── CATS (Continuation-Aware Trajectory Supervision) ──

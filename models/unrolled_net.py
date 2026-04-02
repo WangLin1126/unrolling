@@ -119,6 +119,7 @@ class UnrolledDeblurNet(nn.Module):
         precomputed_targets: list[torch.Tensor] | None = None,
         max_stage: int | None = None,
         active_stage: int | None = None,
+        detach_between_stages: bool = False,
     ) -> dict:
         """Run T-stage unrolled deblurring.
 
@@ -133,6 +134,9 @@ class UnrolledDeblurNet(nn.Module):
                           stages run under ``torch.no_grad()`` and the
                           input is detached at the boundary (default: None,
                           meaning all stages are active / end-to-end)
+            detach_between_stages: if True, detach ``x_t`` before every
+                          stage t>0 so that later-stage losses cannot
+                          back-propagate into earlier denoisers
 
         Returns:
             dict with pred, stage_outputs, stage_targets, blur_sigma_deltas
@@ -203,6 +207,10 @@ class UnrolledDeblurNet(nn.Module):
             else:
                 if active_stage is not None and t == active_stage:
                     # Detach to cut gradient flow from earlier stages
+                    x_t = x_t.detach()
+                if detach_between_stages and t > 0:
+                    # Stage-wise detached: block gradient from stage t's
+                    # loss back into stages 0..t-1
                     x_t = x_t.detach()
                 x_t = self.solver.step(
                     x_t,
