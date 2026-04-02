@@ -48,6 +48,7 @@ from train_method import (
     train_one_epoch_gradual_in_epoch,
     setup_gradually_freeze,
     train_one_epoch_gradually_freeze,
+    train_one_epoch_stage_wise_detached,
     run_tail_align,
 )
 
@@ -779,6 +780,11 @@ def main():
                     prev_freeze_boundary = last_frozen
                 avg_loss = train_one_epoch_gradually_freeze(
                     ctx, train_loader, epoch, last_frozen,
+                )
+
+            elif stage_wise_mode == "stage_wise_detached":
+                avg_loss = train_one_epoch_stage_wise_detached(
+                    ctx, train_loader, epoch,
                 )
 
             # ── Scheduler step ─────────────────────────────────
