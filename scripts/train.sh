@@ -21,12 +21,12 @@ NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
-CHECKPOINT=""
-TS=(12)
+CHECKPOINT="null"
+TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
 # geom | power | uniform | trainable
-SIGMA_SCHEDULES=("power")
+SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
 DENOISERS=("dncnn")
@@ -37,14 +37,15 @@ INNER_ITERS=(1)
 LEARNABLE_LOSS_WEIGHTS=(false)
 # all: gradual change | last: all compare last stage | one_stage: only compute last stage loss 
 # ("cats_freq" "cats_operator" "cats_residual" "cats_combined")
-LOSS_MODES=("cats_freq" "all")
+LOSS_MODES=("all")
 # constant | geom | geom_inc | geom_dec | dpir
-BETA_MODES=("constant")
+BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=20
+BATCH_SIZE_PER_GPU=24
 LR=1e-3
+stage_wise_train='end2end'
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
 STEP_SIZE=50
@@ -106,6 +107,7 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --train.early_stop_patience "${EARLY_STOP_PATIENCE}" \
     --train.run_test_after_train "${RUN_TEST_AFTER}" \
     --train.loss_mode "${LOSS_MODE}" \
+    --train.stage_wise_train "${stage_wise_train}" \
     --train.use_compile "${USE_COMPILE}" \
     --test.batch_size "${TEST_BATCH_SIZE}" \
     --test.num_workers "${TEST_NUM_WORKERS}" \
