@@ -23,7 +23,12 @@ logger = logging.getLogger(__name__)
 
 
 def unwrap_model(m: nn.Module) -> nn.Module:
-    return m.module if isinstance(m, DDP) else m
+    if isinstance(m, DDP):
+        m = m.module
+    # torch.compile wraps in OptimizedModule; unwrap to get original
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
+    return m
 
 
 # ── Freeze / unfreeze helpers ─────────────────────────────────────────
