@@ -408,7 +408,12 @@ def load_checkpoint(
     raw_criterion = unwrap_model(criterion)
 
     if isinstance(ckpt, dict) and "model" in ckpt:
-        raw_model.load_state_dict(ckpt["model"], strict=True)
+        state_dict = ckpt["model"]
+        # Strip DDP "module." and torch.compile "_orig_mod." prefixes
+        for prefix in ("module.", "_orig_mod."):
+            if any(k.startswith(prefix) for k in state_dict.keys()):
+                state_dict = {k.replace(prefix, "", 1): v for k, v in state_dict.items()}
+        raw_model.load_state_dict(state_dict, strict=True)
 
         if "criterion" in ckpt:
             try:
