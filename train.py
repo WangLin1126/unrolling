@@ -459,6 +459,11 @@ def main():
 
         seed_everything(tc["seed"] + rank)
 
+        # ── GPU performance flags (FP32-safe) ──────────────────
+        # cuDNN auto-tuner: benchmark convolution algorithms on first run,
+        # then cache the fastest one. Free speedup when input sizes are fixed.
+        torch.backends.cudnn.benchmark = True
+
         ckpt_cfg = mc.get("checkpoint", None)
         resume_ckpt = resolve_checkpoint_path(ckpt_cfg)
 
@@ -516,26 +521,29 @@ def main():
         train_sampler = DistributedSampler(train_ds, shuffle=True) if use_ddp else None
         val_sampler = DistributedSampler(val_ds, shuffle=False) if use_ddp else None
 
+        _nw = tc["num_workers"]
         train_loader = DataLoader(
             train_ds,
             batch_size=tc["batch_size"],
             shuffle=(train_sampler is None),
             sampler=train_sampler,
-            num_workers=tc["num_workers"],
+            num_workers=_nw,
             pin_memory=True,
             collate_fn=collate_fn,
             drop_last=True,
-            persistent_workers=tc["num_workers"] > 0,
+            persistent_workers=_nw > 0,
+            prefetch_factor=tc.get("prefetch_factor", 3) if _nw > 0 else None,
         )
         val_loader = DataLoader(
             val_ds,
             batch_size=tc["batch_size"],
             shuffle=False,
             sampler=val_sampler,
-            num_workers=tc["num_workers"],
+            num_workers=_nw,
             pin_memory=True,
             collate_fn=collate_fn,
-            persistent_workers=tc["num_workers"] > 0,
+            persistent_workers=_nw > 0,
+            prefetch_factor=tc.get("prefetch_factor", 3) if _nw > 0 else None,
         )
 
         if is_main_process():
@@ -559,6 +567,11 @@ def main():
             noise_sigma_schedule=mc.get("noise_sigma_schedule", "loguniform"),
             noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
         ).to(device)
+
+        # Channels-last memory format: cuDNN prefers NHWC layout for Conv2d,
+        # avoids internal transposes and enables faster kernels on H200/A100.
+        if tc.get("channels_last", True):
+            model = model.to(memory_format=torch.channels_last)
 
         if tc.get("use_compile", False):
             model = torch.compile(model)
@@ -719,6 +732,7 @@ def main():
             use_ddp=use_ddp,
             train_dir=train_dir,
             logger=logger if is_main_process() else None,
+            channels_last=tc.get("channels_last", True),
             optimizers=optimizers,
             schedulers=schedulers,
             best_psnr=best_psnr,
@@ -831,14 +845,20 @@ def main():
                 val_psnr_sum_local = 0.0
                 val_count_local = 0.0
 
+                _cl = tc.get("channels_last", True)
                 with torch.no_grad():
                     for blur, sharp, blur_sigmas, noise_sigmas, targets in val_loader:
                         blur = blur.to(device, non_blocking=True)
                         sharp = sharp.to(device, non_blocking=True)
                         blur_sigmas = blur_sigmas.to(device, non_blocking=True)
                         noise_sigmas = noise_sigmas.to(device, non_blocking=True)
+                        if _cl:
+                            blur = blur.to(memory_format=torch.channels_last)
+                            sharp = sharp.to(memory_format=torch.channels_last)
                         if use_precomputed:
                             targets_gpu = [t.to(device, non_blocking=True) for t in targets]
+                            if _cl:
+                                targets_gpu = [t.to(memory_format=torch.channels_last) for t in targets_gpu]
                             result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
                         else:
                             result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)

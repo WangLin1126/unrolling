@@ -150,6 +150,7 @@ class TrainContext:
     use_ddp: bool
     train_dir: Path
     logger: logging.Logger
+    channels_last: bool = False
 
     # Optional: per-stage optimisers for gradual_in_epoch
     optimizers: list[torch.optim.Optimizer] | None = None
@@ -167,6 +168,12 @@ def forward_model(ctx: TrainContext, blur, blur_sigmas, noise_sigmas, sharp,
                   targets_gpu, *, max_stage=None, active_stage=None,
                   detach_between_stages=False):
     """Run the model forward, handling precomputed vs on-the-fly targets."""
+    if ctx.channels_last:
+        blur = blur.to(memory_format=torch.channels_last)
+        if sharp is not None:
+            sharp = sharp.to(memory_format=torch.channels_last)
+        if targets_gpu is not None:
+            targets_gpu = [t.to(memory_format=torch.channels_last) for t in targets_gpu]
     if ctx.use_precomputed:
         return ctx.model(
             blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas,

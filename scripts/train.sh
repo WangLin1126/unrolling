@@ -57,7 +57,7 @@ LOG_EVERY=10
 VAL_EVERY=1
 EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
-USE_COMPILE=false
+USE_COMPILE=true
 
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=8

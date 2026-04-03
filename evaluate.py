@@ -332,6 +332,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
     num_workers = tc.get("num_workers", 0)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.backends.cudnn.benchmark = True
     exp_dir = Path(exp_dir)
     exp_dir.mkdir(parents=True, exist_ok=True)
     fig_dir = exp_dir / "figures"
@@ -388,6 +389,11 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
     ).to(device)
 
+    # Channels-last memory format for faster Conv2d inference
+    train_cfg = cfg.get("train", {})
+    if train_cfg.get("channels_last", True):
+        model = model.to(memory_format=torch.channels_last)
+
     state_dict, raw_ckpt = load_checkpoint_for_test(checkpoint_path, device)
     model.load_state_dict(state_dict, strict=True)
     model.eval()
@@ -421,6 +427,9 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
             noise_sigma = batch["noise_sigma"].to(device=device, dtype=torch.float32, non_blocking=True)
             paths = batch["paths"]
             orig_sizes = batch["orig_sizes"]
+            if train_cfg.get("channels_last", True):
+                blur = blur.to(memory_format=torch.channels_last)
+                sharp = sharp.to(memory_format=torch.channels_last)
 
             result = model(blur, blur_sigma, noise_sigma, x_gt=None)
 
