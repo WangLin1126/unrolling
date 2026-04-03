@@ -80,8 +80,8 @@ model:
 loss:
   - name: "charbonnier"
     weight: 1.0
-  - name: "ssim"
-    weight: 0.2
+  # - name: "ssim"
+  #   weight: 0.2
 
 # Training
 train:

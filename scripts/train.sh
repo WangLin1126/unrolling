@@ -31,7 +31,7 @@ FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
 DENOISERS=("dncnn")
 SHARE_DENOISERS=false
-INNER_ITERS=(1)
+INNER_ITERS=(2)
 
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
@@ -43,9 +43,9 @@ BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=24
-LR=1e-3
-stage_wise_train='end2end'
+BATCH_SIZE_PER_GPU=6
+LR=5e-4
+stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
 STEP_SIZE=50
