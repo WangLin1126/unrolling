@@ -8,8 +8,8 @@ NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
 
 # ── Data ────────────────────────────────────────────────────────
-TRAIN_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_train_256_random_5/*.png"
-TEST_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_valid_256_random_5/*.png"
+TRAIN_GLOB="/home/linw/storage/DIV2K_train_256_random_5/*.png"
+TEST_GLOB="/home/linw/storage/DIV2K_valid_256_random_5/*.png"
 VAL_RATIO=0.15
 PAD_BORDER=32
 
@@ -26,7 +26,7 @@ TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
 # geom | power | uniform | trainable
-SIGMA_SCHEDULES=("uniform")
+SIGMA_SCHEDULES=("power")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
 DENOISERS=("dncnn")
@@ -43,8 +43,8 @@ BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=6
-LR=5e-4
+BATCH_SIZE_PER_GPU=4
+LR=1e-3
 stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
