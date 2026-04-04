@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+torch.set_float32_matmul_precision('high')
 import torch.distributed as dist
 import torch.nn as nn
 import yaml
@@ -338,7 +339,12 @@ def set_rng_state(state: dict):
 
 
 def unwrap_model(m: nn.Module) -> nn.Module:
-    return m.module if isinstance(m, DDP) else m
+    if isinstance(m, DDP):
+        m = m.module
+    # torch.compile wraps in OptimizedModule; unwrap to get original
+    if hasattr(m, "_orig_mod"):
+        m = m._orig_mod
+    return m
 
 
 def save_checkpoint(
@@ -403,7 +409,12 @@ def load_checkpoint(
     raw_criterion = unwrap_model(criterion)
 
     if isinstance(ckpt, dict) and "model" in ckpt:
-        raw_model.load_state_dict(ckpt["model"], strict=True)
+        state_dict = ckpt["model"]
+        # Strip DDP "module." and torch.compile "_orig_mod." prefixes
+        for prefix in ("module.", "_orig_mod."):
+            if any(k.startswith(prefix) for k in state_dict.keys()):
+                state_dict = {k.replace(prefix, "", 1): v for k, v in state_dict.items()}
+        raw_model.load_state_dict(state_dict, strict=True)
 
         if "criterion" in ckpt:
             try:

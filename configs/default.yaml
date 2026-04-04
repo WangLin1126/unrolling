@@ -80,8 +80,8 @@ model:
 loss:
   - name: "charbonnier"
     weight: 1.0
-  - name: "ssim"
-    weight: 0.2
+  # - name: "ssim"
+  #   weight: 0.2
 
 # Training
 train:
@@ -100,7 +100,7 @@ train:
   early_stop_patience: 20
   run_test_after_train: true
   channels_last: true            # NHWC memory format for faster Conv2d on GPU
-  prefetch_factor: 3             # DataLoader prefetch depth per worker
+  prefetch_factor: 4             # DataLoader prefetch depth per worker
   gpus: "0"                     # e.g. "0,1,2,3"
   loss_mode: "all"              # "all" | "last" | "one_stage" | "blur_last"
                                 # CATS modes: "cats_freq" | "cats_operator" | "cats_residual" | "cats_combined"

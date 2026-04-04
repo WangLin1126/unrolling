@@ -314,8 +314,14 @@ def load_checkpoint_for_test(checkpoint_path: str | Path, device: torch.device):
         state_dict = ckpt
         raw_ckpt = {"legacy_state_dict_only": True}
 
-    if any(k.startswith("module.") for k in state_dict.keys()):
-        state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+    # Strip DDP "module." and torch.compile "_orig_mod." prefixes
+    def _strip_prefix(sd):
+        for prefix in ("module.", "_orig_mod."):
+            if any(k.startswith(prefix) for k in sd.keys()):
+                sd = {k.replace(prefix, "", 1): v for k, v in sd.items()}
+        return sd
+ 
+    state_dict = _strip_prefix(state_dict)
 
     return state_dict, raw_ckpt
 

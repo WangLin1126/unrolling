@@ -21,7 +21,7 @@ NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
-CHECKPOINT="null"
+CHECKPOINT="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/results/DIV2K/T10-hqs-restormer-inner1-blur_sigma_uniform_4-noise_sigma_0.1_0.1-beta_geom-lossw_uniform-lmode_all/20260403_134635/train/last.pth"
 TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
@@ -29,7 +29,7 @@ SOLVERS=("hqs")
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
-DENOISERS=("dncnn")
+DENOISERS=("restormer")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
@@ -43,9 +43,9 @@ BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=24
+BATCH_SIZE_PER_GPU=6
 LR=1e-3
-stage_wise_train='end2end'
+stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
 STEP_SIZE=50
