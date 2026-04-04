@@ -880,6 +880,7 @@ def main():
                             loss_v, _ = criterion(
                                 result["stage_outputs"], result["stage_targets"],
                                 x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+                                blur_sigma_deltas=result.get("blur_sigma_deltas"),
                             )
                         else:
                             loss_v, _ = criterion(result["stage_outputs"], result["stage_targets"])
