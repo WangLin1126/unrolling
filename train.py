@@ -70,11 +70,11 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
         f"-{mc['solver']}"
         f"-{denoiser}"
         f"-inner{mc.get('inner_iters', 1)}"
-        f"-blur_sigma_{mc.get('blur_sigma_schedule', 'uniform')}_{dc['blur']['sigma_list']}"
-        f"-noise_sigma_{dc['blur']['noise_sigma_min']}_{dc['blur']['noise_sigma_max']}"
+        f"-ks{dc['blur']['kernel_size']}"
+        f"-blur_{mc.get('blur_sigma_schedule', 'uniform')}_{dc['blur']['sigma_list']}"
+        f"-noise_{dc['blur']['noise_sigma_min']}_{dc['blur']['noise_sigma_max']}"
         f"-beta_{mc.get('beta_schedule', 'geom')}"
-        f"-lossw_{'learn' if mc.get('learnable_loss_weights') else 'uniform'}"
-        f"-lmode_{tc.get('loss_mode', 'all')}"
+        f"-loss_{tc.get('loss_mode', 'all')}"
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

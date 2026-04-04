@@ -88,22 +88,23 @@ class GeomBlurSchedule(BlurSigmaSchedule):
 
 
 class PowerBlurSchedule(BlurSigmaSchedule):
-    """Power-law weighting: α_t ∝ (T-t)^p (front_heavy) or (t+1)^p."""
-
     def __init__(self, T: int, p: float = 2.0, front_heavy: bool = True):
         super().__init__(T)
         self.p = float(p)
         self.front_heavy = bool(front_heavy)
-        self.register_buffer("_t_idx", torch.arange(T, dtype=torch.float32))
+        self.register_buffer("_grid", torch.linspace(0.0, 1.0, T + 1))
 
     def _compute_alpha(self, device, dtype):
-        t = self._t_idx.to(dtype=dtype)
+        u = self._grid.to(dtype=dtype)
         if self.front_heavy:
-            w = (t + 1) ** self.p
+            F = u ** self.p
         else:
-            w = (self.T - t) ** self.p
-        return w / (w.sum() + _EPS)
+            F = 1.0 - (1.0 - u) ** self.p
 
+        alpha = F[1:] - F[:-1]
+        alpha = alpha.clamp_min(0.0)
+
+        return alpha / (alpha.sum() + _EPS)
 
 def build_blur_sigma_schedule(
     name: str,

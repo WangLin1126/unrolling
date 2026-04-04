@@ -2,7 +2,7 @@
 
 # Data (always full-image, no patching)
 data:
-  dataset_name: "DIV2K"
+  dataset_name: "AFHQ-cat"
   train_glob: "/home/lwang/storage/DIV2K/DIV2K_train_512_grid_10/*.png"
   val_ratio: 0.1
   test_glob: "/home/lwang/storage/DIV2K/DIV2K_valid_512_grid_10/*.png"

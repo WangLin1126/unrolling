@@ -8,20 +8,21 @@ NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
 
 # ── Data ────────────────────────────────────────────────────────
-TRAIN_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_train_256_random_5/*.png"
-TEST_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_valid_256_random_5/*.png"
-VAL_RATIO=0.15
+TRAIN_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/datasets/output_cat_split/train/*.png"
+TEST_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/datasets/output_cat_split/test/*.png"
+VAL_RATIO=0.11
 PAD_BORDER=32
 
 # blur generation
-SIGMA_LIST="4"
+SIGMA_LIST="3"
+KERNEL_SIZE=61
 NOISE_PROB=1.0
-NOISE_SIGMA_MIN=0.1
-NOISE_SIGMA_MAX=0.1
+NOISE_SIGMA_MIN=0.05
+NOISE_SIGMA_MAX=0.05
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
-CHECKPOINT="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/results/DIV2K/T10-hqs-restormer-inner1-blur_sigma_uniform_4-noise_sigma_0.1_0.1-beta_geom-lossw_uniform-lmode_all/20260403_134635/train/last.pth"
+CHECKPOINT="null"
 TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
@@ -29,7 +30,7 @@ SOLVERS=("hqs")
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
-DENOISERS=("restormer")
+DENOISERS=("dncnn")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
@@ -43,7 +44,7 @@ BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=6
+BATCH_SIZE_PER_GPU=14
 LR=1e-3
 stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
@@ -79,6 +80,7 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --data.val_ratio "${VAL_RATIO}" \
     --data.pad_border "${PAD_BORDER}" \
     --data.blur.sigma_list "${SIGMA_LIST}" \
+    --data.blur.kernel_size "${KERNEL_SIZE}" \
     --data.blur.noise_prob "${NOISE_PROB}" \
     --data.blur.noise_sigma_min "${NOISE_SIGMA_MIN}" \
     --data.blur.noise_sigma_max "${NOISE_SIGMA_MAX}" \
