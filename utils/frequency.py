@@ -13,7 +13,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-from models.fft_ops import precompute_freq_sq
+from models.fft_ops import precompute_freq_sq, build_blur_operator
 
 
 # ── Low-pass filtering ──────────────────────────────────────────────
@@ -92,6 +92,7 @@ def compute_cts_operator_targets(
     blur: torch.Tensor,
     blur_sigma: torch.Tensor,
     mu_schedule: torch.Tensor,
+    kernel_size: int = -1,
 ) -> list[torch.Tensor]:
     """Compute CATS-Operator closed-form targets in Fourier domain.
 
@@ -103,6 +104,7 @@ def compute_cts_operator_targets(
         blur:        (B, C, H, W) blurry observation
         blur_sigma:  (B,) per-sample total blur sigma
         mu_schedule: (T,) monotonically increasing values in [0, 1]
+        kernel_size: -1 for analytic Gaussian, >0 for truncated kernel
 
     Returns:
         list of T tensors, each (B, C, H, W)
@@ -113,11 +115,13 @@ def compute_cts_operator_targets(
     X_gt = torch.fft.rfft2(x_gt)    # (B, C, H, W//2+1) complex
     Y = torch.fft.rfft2(blur)       # (B, C, H, W//2+1) complex
 
-    # Compute |H(ω)|² from Gaussian OTF
-    freq_sq = precompute_freq_sq(H, W, x_gt.device, x_gt.dtype)
-    # H(ω) = exp(-0.5 σ² |ω|²), |H|² = exp(-σ² |ω|²)
-    sigma_sq = (blur_sigma ** 2).view(B, 1, 1)  # (B, 1, 1)
-    H_abs_sq = torch.exp(-sigma_sq * freq_sq.unsqueeze(0))  # (B, H, W//2+1)
+    # Compute |H(ω)|² via unified blur operator builder
+    blur_op = build_blur_operator(
+        blur_sigma, H, W,
+        kernel_size=kernel_size,
+        device=x_gt.device, dtype=x_gt.dtype,
+    )
+    H_abs_sq = (blur_op.otf * blur_op.otf.conj()).real  # (B, H, W//2+1)
     H_abs_sq = H_abs_sq.unsqueeze(1)  # (B, 1, H, W//2+1) for broadcasting with C
 
     targets = []

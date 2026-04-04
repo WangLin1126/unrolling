@@ -577,6 +577,7 @@ def main():
             beta_kwargs=mc.get("beta_kwargs", {}),
             noise_sigma_schedule=mc.get("noise_sigma_schedule", "loguniform"),
             noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
+            kernel_size=dc["blur"].get("kernel_size", -1),
         ).to(device)
 
         # Channels-last memory format: cuDNN prefers NHWC layout for Conv2d,
@@ -594,6 +595,7 @@ def main():
             learnable=mc.get("learnable_loss_weights", False),
             mode=tc.get("loss_mode", "all"),
             cts_kwargs=tc.get("cts_kwargs", None),
+            kernel_size=dc["blur"].get("kernel_size", -1),
         ).to(device)
 
         # ── Stage-wise training mode ────────────────────────────

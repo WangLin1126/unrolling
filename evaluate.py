@@ -393,6 +393,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         beta_kwargs=mc.get("beta_kwargs", {}),
         noise_sigma_schedule=mc.get("noise_sigma_schedule", "loguniform"),
         noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
+        kernel_size=dc["blur"].get("kernel_size", -1),
     ).to(device)
 
     # Channels-last memory format for faster Conv2d inference

@@ -451,6 +451,7 @@ def main():
             noise_sigma_schedule=mc.get("noise_sigma_schedule", "loguniform"),
             noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
             inner_iters=mc.get("inner_iters", 1),
+            kernel_size=dc["blur"].get("kernel_size", -1),
         ).to(device)
 
         if is_main_process():
@@ -462,6 +463,7 @@ def main():
             base_loss=base_loss,
             learnable=mc.get("learnable_loss_weights", False),
             mode=tc.get("loss_mode", "all"),
+            kernel_size=dc["blur"].get("kernel_size", -1),
         ).to(device)
 
         if use_ddp:

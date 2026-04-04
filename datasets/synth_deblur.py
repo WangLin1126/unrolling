@@ -28,7 +28,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
 
-from models.fft_ops import gaussian_otf, fft_conv2d_circular, precompute_freq_sq
+from models.fft_ops import build_blur_operator, fft_conv2d_circular, precompute_freq_sq
 from models.schedule import build_blur_sigma_schedule
 
 def _parse_list(s: str):
@@ -41,6 +41,7 @@ class BlurConfig:
     sigma_min: float = 0.8
     sigma_max: float = 3.0
     sigma_list: str = ""
+    kernel_size: int = -1           # -1 = analytic (infinite), >0 = truncated Gaussian
     noise_prob: float = 0.5
     noise_sigma_min: float = 0.0
     noise_sigma_max: float = 0.01
@@ -101,9 +102,12 @@ class SyntheticNonBlindDeblur(Dataset):
         targets = [x_pad[:, :, p:p+H, p:p+W].squeeze(0)]  # targets[0] = clean
         current = x_pad
         for t in range(self.T):
-            otf_t = gaussian_otf(blur_sigma_deltas[t], Hp, Wp,
-                                 device=current.device, dtype=current.dtype,
-                                 freq_sq=freq_sq)
+            otf_t = build_blur_operator(
+                blur_sigma_deltas[t], Hp, Wp,
+                kernel_size=self.cfg.kernel_size,
+                device=current.device, dtype=current.dtype,
+                freq_sq=freq_sq,
+            ).otf
             current = fft_conv2d_circular(current, otf_t)
             targets.append(current[:, :, p:p+H, p:p+W].squeeze(0))
         return targets  # list of T+1 tensors, each (C, H, W). targets[0] = clear image.
@@ -127,7 +131,11 @@ class SyntheticNonBlindDeblur(Dataset):
         x_pad = F.pad(x, (p, p, p, p), mode="reflect")
         Hp, Wp = H + 2 * p, W + 2 * p
 
-        otf = gaussian_otf(blur_sigma, Hp, Wp, device=x.device, dtype=x.dtype)
+        otf = build_blur_operator(
+            blur_sigma, Hp, Wp,
+            kernel_size=self.cfg.kernel_size,
+            device=x.device, dtype=x.dtype,
+        ).otf
         y_pad = fft_conv2d_circular(x_pad, otf)
         y = y_pad[:, :, p:p+H, p:p+W]
 

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Sequence
-from models.fft_ops import gaussian_otf, fft_conv2d_circular
+from models.fft_ops import build_blur_operator, fft_conv2d_circular
 from models.schedule import build_difficulty_schedule
 from utils.frequency import apply_lpf, compute_cts_operator_targets
 # ── Base losses ─────────────────────────────────────────────────────
@@ -115,12 +115,14 @@ class StagewiseLoss(nn.Module):
                  blur_sigma_list=None,
                  # ── CATS parameters ──
                  cts_kwargs: dict | None = None,
+                 kernel_size: int = -1,
                  ):
         super().__init__()
         self.T = T
         self.base_loss = base_loss
         self.learnable = learnable
         self.mode = mode
+        self.kernel_size = kernel_size
         if learnable:
             self.logits = nn.Parameter(torch.zeros(T))
         else:
@@ -227,6 +229,7 @@ class StagewiseLoss(nn.Module):
             d = self.difficulty_schedule().to(device)  # (T,) increase
             cats_targets = compute_cts_operator_targets(
                 x_gt=x_gt, blur=blur, blur_sigma=blur_sigma, mu_schedule=1.0-d,
+                kernel_size=self.kernel_size,
             )
 
         # ── Main loss loop ──────────────────────────────────────
@@ -250,10 +253,11 @@ class StagewiseLoss(nn.Module):
                     p = max(1, int(math.ceil(3.0 * sigma)))
                     loss_pad = F.pad(loss_map, (p, p, p, p), mode="reflect")
                     Hp, Wp = H + 2 * p, W + 2 * p
-                    otf = gaussian_otf(
+                    otf = build_blur_operator(
                         sigma, Hp, Wp,
+                        kernel_size=self.kernel_size,
                         device=loss_map.device, dtype=loss_map.dtype,
-                    )
+                    ).otf
                     loss_pad = fft_conv2d_circular(loss_pad, otf)
                     loss_map = loss_pad[:, :, p:p+H, p:p+W]
                 l_t = loss_map.mean()
