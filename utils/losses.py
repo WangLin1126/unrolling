@@ -99,10 +99,12 @@ class StagewiseLoss(nn.Module):
 
     Supports original modes: "all", "last", "one_stage", "blur_last"
     And CATS (Continuation-Aware Trajectory Supervision) modes:
-      - "cats_freq":     frequency-progressive supervision
-      - "cats_operator": operator-aware closed-form targets
-      - "cats_residual": per-stage residual supervision
-      - "cats_combined": CATS-Freq primary + residual auxiliary
+      - "cats_freq":             frequency-progressive supervision
+      - "cats_operator":         operator-aware closed-form targets
+      - "cats_residual":         per-stage residual supervision
+      - "cats_combined":         CATS-Freq primary + residual auxiliary
+      - "cats_consistency":      Charbonnier + data consistency with observation y
+      - "cats_consistency_all":  Charbonnier + consistency with y and all previous targets
 
     Weights are uniform or learnable (softmax-parameterised to stay positive and sum to 1).
     """
@@ -154,8 +156,12 @@ class StagewiseLoss(nn.Module):
         self._cts_residual_weight = cts.get("residual_weight", 0.0)
         self._cts_lambda_final = cts.get("lambda_final", 0.0)
 
-        # Build difficulty schedule for CATS modes
-        if mode.startswith("cats_"):
+        # ── Consistency loss parameters ────────────────────────
+        self._consistency_weight = cts.get("consistency_weight", 0.1)
+        self._consistency_p = cts.get("consistency_p", 2.0)
+
+        # Build difficulty schedule for CATS modes (not needed for consistency modes)
+        if mode.startswith("cats_") and mode not in ("cats_consistency", "cats_consistency_all"):
             difficulty_name = cts.get("difficulty_schedule", "power")
             difficulty_kw = {
                 k: v for k, v in cts.items()
@@ -179,6 +185,49 @@ class StagewiseLoss(nn.Module):
         cutoff_min = 0.05
         return cutoff_min + d * (1.0 - cutoff_min)
 
+    def _apply_consistency_blur(self, x: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+        """Blur x by per-sample sigma (B,) using reflect-pad + FFT convolution.
+
+        Args:
+            x:     (B, C, H, W) image tensor
+            sigma: (B,) per-sample blur std
+        Returns:
+            (B, C, H, W) blurred image
+        """
+        B, C, H, W = x.shape
+        sigma_max = sigma.max().item()
+        if sigma_max < 1e-12:
+            return x
+        p = max(1, int(math.ceil(3.0 * sigma_max)))
+        x_pad = F.pad(x, (p, p, p, p), mode="reflect")
+        Hp, Wp = H + 2 * p, W + 2 * p
+        otf = build_blur_operator(
+            sigma, Hp, Wp,
+            kernel_size=self.kernel_size,
+            device=x.device, dtype=x.dtype,
+        ).otf
+        y_pad = fft_conv2d_circular(x_pad, otf)
+        return y_pad[:, :, p:p+H, p:p+W]
+
+    @staticmethod
+    def _consistency_loss(pred_blurred: torch.Tensor, reference: torch.Tensor,
+                          p: float) -> torch.Tensor:
+        """Pixel-sum-then-power consistency loss.
+
+        When the prediction is correct, the residual should be pure Gaussian
+        noise whose spatial sum is approximately zero.
+
+        Args:
+            pred_blurred: (B, C, H, W) blurred prediction
+            reference:    (B, C, H, W) observation or target to compare against
+            p:            exponent (default 2)
+        Returns:
+            scalar loss
+        """
+        diff = pred_blurred - reference  # (B, C, H, W)
+        pixel_sum = diff.sum(dim=(1, 2, 3))  # (B,)
+        return (pixel_sum.abs() ** p).mean()
+
     def forward(
         self,
         stage_outputs: list[torch.Tensor],
@@ -187,14 +236,16 @@ class StagewiseLoss(nn.Module):
         x_gt: torch.Tensor | None = None,
         blur: torch.Tensor | None = None,
         blur_sigma: torch.Tensor | None = None,
+        blur_sigma_deltas: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict]:
         """
         Args:
             stage_outputs: [est_of_x_{T-1}, ..., est_of_x_0]  len=T
             stage_targets: [x_{T-1}, ..., x_0]  len=T (x_0 = clean for "all" mode)
             x_gt:          (B, C, H, W) clean GT — needed for CATS modes
-            blur:          (B, C, H, W) blurry input — needed for cats_operator
+            blur:          (B, C, H, W) blurry input — needed for cats_operator / consistency
             blur_sigma:    (B,) blur sigmas — needed for cats_operator
+            blur_sigma_deltas: (B, T) per-stage blur stds — needed for consistency modes
 
         Returns:
             total_loss, info_dict with per-stage losses and weights
@@ -300,6 +351,45 @@ class StagewiseLoss(nn.Module):
                         - apply_lpf(x_gt, cutoffs[t-1].item(), self._cts_filter_type)
                     l_residual = self.base_loss(delta_pred, delta_gt)
                     l_t = l_primary + self._cts_residual_weight * l_residual
+
+            # ── CATS-Consistency: Charbonnier + data consistency with y ──
+            elif self.mode == "cats_consistency":
+                assert blur is not None and blur_sigma_deltas is not None, \
+                    "cats_consistency mode requires blur and blur_sigma_deltas"
+                l_t = self.base_loss(stage_outputs[t], stage_targets[t])
+                # Residual sigma to blur output_t back to y's level:
+                # deltas[:, T-1-t : T] are the (t+1) deltas already removed
+                residual_sq = blur_sigma_deltas[:, self.T-1-t:self.T].pow(2).sum(dim=1)
+                residual_sigma = residual_sq.sqrt()  # (B,)
+                blurred = self._apply_consistency_blur(stage_outputs[t], residual_sigma)
+                l_t = l_t + self._consistency_weight * self._consistency_loss(
+                    blurred, blur, self._consistency_p,
+                )
+
+            # ── CATS-Consistency-All: Charbonnier + consistency with y and all previous targets ──
+            elif self.mode == "cats_consistency_all":
+                assert blur is not None and blur_sigma_deltas is not None, \
+                    "cats_consistency_all mode requires blur and blur_sigma_deltas"
+                assert stage_targets is not None
+                l_t = self.base_loss(stage_outputs[t], stage_targets[t])
+                n_comparisons = t + 1  # 1 with y + t with previous targets
+                w_consist = self._consistency_weight / n_comparisons
+
+                # Compare with y
+                residual_sq_y = blur_sigma_deltas[:, self.T-1-t:self.T].pow(2).sum(dim=1)
+                blurred_y = self._apply_consistency_blur(stage_outputs[t], residual_sq_y.sqrt())
+                l_t = l_t + w_consist * self._consistency_loss(
+                    blurred_y, blur, self._consistency_p,
+                )
+
+                # Compare with each previous stage target s (0..t-1)
+                for s in range(t):
+                    # Deltas from T-1-t to T-2-s (t-s deltas)
+                    residual_sq_s = blur_sigma_deltas[:, self.T-1-t:self.T-1-s].pow(2).sum(dim=1)
+                    blurred_s = self._apply_consistency_blur(stage_outputs[t], residual_sq_s.sqrt())
+                    l_t = l_t + w_consist * self._consistency_loss(
+                        blurred_s, stage_targets[s], self._consistency_p,
+                    )
 
             else:
                 raise ValueError(f"Unknown StagewiseLoss mode: {self.mode}")

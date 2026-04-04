@@ -105,6 +105,7 @@ train:
   gpus: "0"                     # e.g. "0,1,2,3"
   loss_mode: "all"              # "all" | "last" | "one_stage" | "blur_last"
                                 # CATS modes: "cats_freq" | "cats_operator" | "cats_residual" | "cats_combined"
+                                # Consistency modes: "cats_consistency" | "cats_consistency_all"
   stage_wise_train: "gradually_freeze"   # "end2end" | "one_then_another" | "gradual_in_epoch" | "gradually_freeze" | "stage_wise_detached"
   tail_align: True              # if true, append fine-tuning phase with small LR after stage-wise training
   tail_align_lr: 1.0e-5            # LR for tail-align (default: lr * 0.1)
@@ -116,6 +117,8 @@ train:
     filter_type: "gaussian"      # "gaussian" | "butterworth" | "ideal"
     residual_weight: 0.5         # weight for residual loss in cats_combined
     lambda_final: 0.0            # extra weight on final-stage clean-GT loss
+    consistency_weight: 0.1      # weight for data consistency loss (cats_consistency / cats_consistency_all)
+    consistency_p: 2.0           # exponent for pixel-sum-then-power consistency loss
 
 # Testing
 test:
