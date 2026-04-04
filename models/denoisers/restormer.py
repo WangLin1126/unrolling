@@ -78,8 +78,11 @@ class TransformerBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         # LayerNorm on channel dimension
-        x = x + self.attn(self.norm1(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2))
-        x = x + self.ffn(self.norm2(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2))
+        y = self.norm1(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
+        x = x + self.attn(y)
+
+        y = self.norm2(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
+        x = x + self.ffn(y)
         return x
 
 
@@ -209,6 +212,7 @@ class Restormer(nn.Module):
         # Output projection
         self.output = nn.Conv2d(mid_channels, in_channels, kernel_size,
                                 padding=kernel_size // 2, bias=bias)
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_in = x

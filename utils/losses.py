@@ -224,7 +224,7 @@ class StagewiseLoss(nn.Module):
         elif self.mode == "cats_operator":
             assert blur is not None and blur_sigma is not None, \
                 "cats_operator mode requires blur and blur_sigma"
-            d = self.difficulty_schedule().to(device)  # (T,)
+            d = self.difficulty_schedule().to(device)  # (T,) increase
             cats_targets = compute_cts_operator_targets(
                 x_gt=x_gt, blur=blur, blur_sigma=blur_sigma, mu_schedule=1.0-d,
             )
@@ -293,7 +293,7 @@ class StagewiseLoss(nn.Module):
                 else:
                     delta_pred = stage_outputs[t] - stage_outputs[t - 1]
                     delta_gt = apply_lpf(x_gt, cutoff, self._cts_filter_type) \
-                        - apply_lpf(x_gt, cutoffs[t - 1].item(), self._cts_filter_type)
+                        - apply_lpf(x_gt, cutoffs[t-1].item(), self._cts_filter_type)
                     l_residual = self.base_loss(delta_pred, delta_gt)
                     l_t = l_primary + self._cts_residual_weight * l_residual
 

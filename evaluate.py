@@ -314,8 +314,14 @@ def load_checkpoint_for_test(checkpoint_path: str | Path, device: torch.device):
         state_dict = ckpt
         raw_ckpt = {"legacy_state_dict_only": True}
 
-    if any(k.startswith("module.") for k in state_dict.keys()):
-        state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+    # Strip DDP "module." and torch.compile "_orig_mod." prefixes
+    def _strip_prefix(sd):
+        for prefix in ("module.", "_orig_mod."):
+            if any(k.startswith(prefix) for k in sd.keys()):
+                sd = {k.replace(prefix, "", 1): v for k, v in sd.items()}
+        return sd
+ 
+    state_dict = _strip_prefix(state_dict)
 
     return state_dict, raw_ckpt
 
@@ -332,6 +338,7 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
     num_workers = tc.get("num_workers", 0)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.backends.cudnn.benchmark = True
     exp_dir = Path(exp_dir)
     exp_dir.mkdir(parents=True, exist_ok=True)
     fig_dir = exp_dir / "figures"
@@ -388,6 +395,11 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
         noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
     ).to(device)
 
+    # Channels-last memory format for faster Conv2d inference
+    train_cfg = cfg.get("train", {})
+    if train_cfg.get("channels_last", True):
+        model = model.to(memory_format=torch.channels_last)
+
     state_dict, raw_ckpt = load_checkpoint_for_test(checkpoint_path, device)
     model.load_state_dict(state_dict, strict=True)
     model.eval()
@@ -421,6 +433,9 @@ def run_evaluate(cfg: dict, checkpoint_path: str, exp_dir: str | Path) -> dict:
             noise_sigma = batch["noise_sigma"].to(device=device, dtype=torch.float32, non_blocking=True)
             paths = batch["paths"]
             orig_sizes = batch["orig_sizes"]
+            if train_cfg.get("channels_last", True):
+                blur = blur.to(memory_format=torch.channels_last)
+                sharp = sharp.to(memory_format=torch.channels_last)
 
             result = model(blur, blur_sigma, noise_sigma, x_gt=None)
 
@@ -563,6 +578,7 @@ def main():
     )
     parser.add_argument("--test.batch_size", dest="test_batch_size", type=int, default=None)
     parser.add_argument("--test.num_workers", dest="test_num_workers", type=int, default=None)
+    parser.add_argument("--test.glob", dest="test_glob", type=str, default=None)
     args = parser.parse_args()
 
     cfg = load_yaml_config(args.config)
@@ -577,7 +593,8 @@ def main():
         cfg.setdefault("test", {})["batch_size"] = args.test_batch_size
     if args.test_num_workers is not None:
         cfg.setdefault("test", {})["num_workers"] = args.test_num_workers
-
+    if args.test_glob is not None:
+        cfg.setdefault("data", {})["test_glob"] = args.test_glob
     exp_dir = Path(args.exp_dir) if args.exp_dir is not None else infer_test_dir_from_checkpoint(args.checkpoint)
     run_evaluate(cfg, args.checkpoint, exp_dir)
 

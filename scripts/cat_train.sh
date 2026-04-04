@@ -46,7 +46,7 @@ FILTER_TYPES=("gaussian")           # "gaussian" | "butterworth" | "ideal"
 # Residual weight for cats_combined mode (0 = freq-only)
 RESIDUAL_WEIGHT=0.5
 # Extra weight on final-stage clean-GT loss (0 = disabled)
-LAMBDA_FINAL=0.0
+LAMBDA_FINAL=0.1
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200

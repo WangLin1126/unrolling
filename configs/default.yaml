@@ -44,8 +44,8 @@ model:
       num_heads: 2
       window_size: 8
     restormer:
-      mid_channels: 48
-      num_levels: 3
+      mid_channels: 16
+      num_levels: 2
       num_blocks: 2
       num_heads: 2
       ffn_expansion: 2.66
@@ -80,8 +80,8 @@ model:
 loss:
   - name: "charbonnier"
     weight: 1.0
-  - name: "ssim"
-    weight: 0.2
+  # - name: "ssim"
+  #   weight: 0.2
 
 # Training
 train:
@@ -99,16 +99,21 @@ train:
   val_every: 1
   early_stop_patience: 20
   run_test_after_train: true
+  channels_last: true            # NHWC memory format for faster Conv2d on GPU
+  prefetch_factor: 4             # DataLoader prefetch depth per worker
   gpus: "0"                     # e.g. "0,1,2,3"
   loss_mode: "all"              # "all" | "last" | "one_stage" | "blur_last"
                                 # CATS modes: "cats_freq" | "cats_operator" | "cats_residual" | "cats_combined"
+  stage_wise_train: "gradually_freeze"   # "end2end" | "one_then_another" | "gradual_in_epoch" | "gradually_freeze" | "stage_wise_detached"
+  tail_align: True              # if true, append fine-tuning phase with small LR after stage-wise training
+  tail_align_lr: 1.0e-5            # LR for tail-align (default: lr * 0.1)
   # ── CATS (Continuation-Aware Trajectory Supervision) ──
   cts_kwargs:
     difficulty_schedule: "power"  # "linear" | "power" | "geom" | "trainable"
     gamma: 2.0                   # power-law exponent (for "power" schedule)
     r: 0.7                       # geometric ratio (for "geom" schedule)
     filter_type: "gaussian"      # "gaussian" | "butterworth" | "ideal"
-    residual_weight: 0.0         # weight for residual loss in cats_combined
+    residual_weight: 0.5         # weight for residual loss in cats_combined
     lambda_final: 0.0            # extra weight on final-stage clean-GT loss
 
 # Testing

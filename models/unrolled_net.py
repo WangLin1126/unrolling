@@ -117,6 +117,9 @@ class UnrolledDeblurNet(nn.Module):
         noise_sigma: torch.Tensor | float,
         x_gt: torch.Tensor | None = None,
         precomputed_targets: list[torch.Tensor] | None = None,
+        max_stage: int | None = None,
+        active_stage: int | None = None,
+        detach_between_stages: bool = False,
     ) -> dict:
         """Run T-stage unrolled deblurring.
 
@@ -126,6 +129,14 @@ class UnrolledDeblurNet(nn.Module):
             noise_sigma: scalar or (B,) per-sample noise std
             x_gt:       (B, C, H, W) clean image (trainable schedule only)
             precomputed_targets: list of T+1 tensors from dataset
+            max_stage:  only run stages 0..max_stage (default: T-1)
+            active_stage: only this denoiser receives gradients; earlier
+                          stages run under ``torch.no_grad()`` and the
+                          input is detached at the boundary (default: None,
+                          meaning all stages are active / end-to-end)
+            detach_between_stages: if True, detach ``x_t`` before every
+                          stage t>0 so that later-stage losses cannot
+                          back-propagate into earlier denoisers
 
         Returns:
             dict with pred, stage_outputs, stage_targets, blur_sigma_deltas
@@ -168,11 +179,13 @@ class UnrolledDeblurNet(nn.Module):
         freq_sq = precompute_freq_sq(Hp, Wp, device, blur.dtype)
 
         # ── Reverse chain on padded grid ────────────────────────
+        effective_T = (max_stage + 1) if max_stage is not None else self.T
+
         stage_outputs = []
         x_t = blur_pad
         del blur_pad
 
-        for t in range(self.T):
+        for t in range(effective_T):
             blur_sigma_t = blur_sigma_deltas[:, self.T-1-t]         # (B,)
             beta_t = betas[:, self.T-1-t]                           # (B,)
             noise_sigma_t = noise_sigma_levels[:, self.T-1-t]       # (B,)
@@ -180,17 +193,40 @@ class UnrolledDeblurNet(nn.Module):
                                device=device, dtype=blur.dtype,
                                freq_sq=freq_sq)
 
-            x_t = self.solver.step(
-                x_t,
-                denoiser=self.denoisers[t],
-                otf=otf,
-                beta=beta_t,
-                noise_sigma=noise_sigma_t,
-                inner_iters=self.inner_iters,
-            )
+            if active_stage is not None and t < active_stage:
+                # Earlier stages: no gradient computation
+                with torch.no_grad():
+                    x_t = self.solver.step(
+                        x_t,
+                        denoiser=self.denoisers[t],
+                        otf=otf,
+                        beta=beta_t,
+                        noise_sigma=noise_sigma_t,
+                        inner_iters=self.inner_iters,
+                    )
+            else:
+                if active_stage is not None and t == active_stage:
+                    # Detach to cut gradient flow from earlier stages
+                    x_t = x_t.detach()
+                if detach_between_stages and t > 0:
+                    # Stage-wise detached: block gradient from stage t's
+                    # loss back into stages 0..t-1
+                    x_t = x_t.detach()
+                x_t = self.solver.step(
+                    x_t,
+                    denoiser=self.denoisers[t],
+                    otf=otf,
+                    beta=beta_t,
+                    noise_sigma=noise_sigma_t,
+                    inner_iters=self.inner_iters,
+                )
             stage_outputs.append(x_t[:, :, p:p+H, p:p+W])
 
         final = stage_outputs[-1].clamp(0, 1)
+
+        # Filter stage_targets to match effective_T length
+        if stage_targets is not None and max_stage is not None:
+            stage_targets = stage_targets[:effective_T]
 
         return {
             "pred": final,

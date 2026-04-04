@@ -16,12 +16,12 @@ PAD_BORDER=32
 # blur generation
 SIGMA_LIST="4"
 NOISE_PROB=1.0
-NOISE_SIGMA_MIN=0.05
-NOISE_SIGMA_MAX=0.2
+NOISE_SIGMA_MIN=0.1
+NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
-CHECKPOINT="null"
+CHECKPOINT="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/results/DIV2K/T10-hqs-restormer-inner1-blur_sigma_uniform_4-noise_sigma_0.1_0.1-beta_geom-lossw_uniform-lmode_all/20260403_134635/train/last.pth"
 TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
@@ -29,21 +29,23 @@ SOLVERS=("hqs")
 SIGMA_SCHEDULES=("uniform")
 FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
-DENOISERS=("drunet")
+DENOISERS=("restormer")
 SHARE_DENOISERS=false
 INNER_ITERS=(1)
 
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
-# all: gradual change | last: all compare last stage | one_stage: only compute last stage loss
-LOSS_MODES=("last")
+# all: gradual change | last: all compare last stage | one_stage: only compute last stage loss 
+# ("cats_freq" "cats_operator" "cats_residual" "cats_combined")
+LOSS_MODES=("all")
 # constant | geom | geom_inc | geom_dec | dpir
-BETA_MODES=("dpir")
+BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=56
-LR=2e-4
+BATCH_SIZE_PER_GPU=6
+LR=1e-3
+stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
 STEP_SIZE=50
@@ -55,7 +57,7 @@ LOG_EVERY=10
 VAL_EVERY=1
 EARLY_STOP_PATIENCE=20
 RUN_TEST_AFTER=true
-USE_COMPILE=false
+USE_COMPILE=true
 
 # ── Testing ─────────────────────────────────────────────────────
 TEST_BATCH_SIZE=8
@@ -105,6 +107,7 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --train.early_stop_patience "${EARLY_STOP_PATIENCE}" \
     --train.run_test_after_train "${RUN_TEST_AFTER}" \
     --train.loss_mode "${LOSS_MODE}" \
+    --train.stage_wise_train "${stage_wise_train}" \
     --train.use_compile "${USE_COMPILE}" \
     --test.batch_size "${TEST_BATCH_SIZE}" \
     --test.num_workers "${TEST_NUM_WORKERS}" \
