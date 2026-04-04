@@ -21,7 +21,7 @@ from models.schedule import (
 )
 from models.denoisers import build_denoiser, apply_denoiser
 from models.solvers import build_solver
-from models.fft_ops import gaussian_otf, fft_conv2d_circular, precompute_freq_sq
+from models.fft_ops import build_blur_operator, fft_conv2d_circular, precompute_freq_sq
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,14 @@ class PaPDeblurNet(nn.Module):
         noise_sigma_schedule: str = "loguniform",
         noise_sigma_schedule_kwargs: dict | None = None,
         inner_iters: int = 1,
+        kernel_size: int = -1,
     ):
         super().__init__()
         T = len(denoiser_chain)
         self.T = T
         self.inner_iters = inner_iters
         self.pad_border = pad_border
+        self.kernel_size = kernel_size
         self.blur_sigma_schedule_name = blur_sigma_schedule
         self.denoiser_chain_cfg = denoiser_chain
 
@@ -125,11 +127,12 @@ class PaPDeblurNet(nn.Module):
         targets = [x_gt]
         current = x_gt_pad
         for t in range(self.T):
-            otf_t = gaussian_otf(
+            otf_t = build_blur_operator(
                 blur_sigma_deltas[:, t], Hp, Wp,
+                kernel_size=self.kernel_size,
                 device=x_gt.device, dtype=x_gt.dtype,
                 freq_sq=freq_sq,
-            )
+            ).otf
             current = fft_conv2d_circular(current, otf_t)
             targets.append(current[:, :, p : p + H, p : p + W])
         del x_gt_pad
@@ -188,11 +191,12 @@ class PaPDeblurNet(nn.Module):
             blur_sigma_t = blur_sigma_deltas[:, self.T - 1 - t]
             beta_t = betas[:, self.T - 1 - t]
             noise_sigma_t = noise_sigma_levels[:, self.T - 1 - t]
-            otf = gaussian_otf(
+            otf = build_blur_operator(
                 blur_sigma_t, Hp, Wp,
+                kernel_size=self.kernel_size,
                 device=device, dtype=blur.dtype,
                 freq_sq=freq_sq,
-            )
+            ).otf
 
             x_t = self.solver.step(
                 x_t,

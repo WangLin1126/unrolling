@@ -12,6 +12,7 @@ data:
     sigma_min: 0.8
     sigma_max: 3.0
     sigma_list: "3,3.5,4"
+    kernel_size: -1              # -1 = analytic (infinite Gaussian), 61 = truncated kernel
     noise_prob: 1.0
     noise_sigma_min: 0.04
     noise_sigma_max: 0.05

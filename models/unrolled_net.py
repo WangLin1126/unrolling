@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from .schedule import build_blur_sigma_schedule, build_noise_sigma_schedule, build_beta_schedule
 from .denoisers import build_denoiser
 from .solvers import build_solver
-from .fft_ops import gaussian_otf, fft_conv2d_circular, precompute_freq_sq
+from .fft_ops import build_blur_operator, fft_conv2d_circular, precompute_freq_sq
 
 
 class UnrolledDeblurNet(nn.Module):
@@ -56,11 +56,13 @@ class UnrolledDeblurNet(nn.Module):
         beta_schedule: str = "geom",
         noise_sigma_schedule: str = "loguniform",
         noise_sigma_schedule_kwargs: dict | None = None,
+        kernel_size: int = -1,
     ):
         super().__init__()
         self.T = T
         self.inner_iters = inner_iters
         self.pad_border = pad_border
+        self.kernel_size = kernel_size
         self.blur_sigma_schedule_name = blur_sigma_schedule
         self.blur_sigma_schedule = build_blur_sigma_schedule(
             blur_sigma_schedule, T=T, **(blur_sigma_schedule_kwargs or {}),
@@ -102,9 +104,12 @@ class UnrolledDeblurNet(nn.Module):
         targets = [x_gt]
         current = x_gt_pad
         for t in range(self.T):
-            otf_t = gaussian_otf(blur_sigma_deltas[:, t], Hp, Wp,
-                                 device=x_gt.device, dtype=x_gt.dtype,
-                                 freq_sq=freq_sq)
+            otf_t = build_blur_operator(
+                blur_sigma_deltas[:, t], Hp, Wp,
+                kernel_size=self.kernel_size,
+                device=x_gt.device, dtype=x_gt.dtype,
+                freq_sq=freq_sq,
+            ).otf
             current = fft_conv2d_circular(current, otf_t)
             targets.append(current[:, :, p:p+H, p:p+W])
         del x_gt_pad
@@ -189,9 +194,12 @@ class UnrolledDeblurNet(nn.Module):
             blur_sigma_t = blur_sigma_deltas[:, self.T-1-t]         # (B,)
             beta_t = betas[:, self.T-1-t]                           # (B,)
             noise_sigma_t = noise_sigma_levels[:, self.T-1-t]       # (B,)
-            otf = gaussian_otf(blur_sigma_t, Hp, Wp,
-                               device=device, dtype=blur.dtype,
-                               freq_sq=freq_sq)
+            otf = build_blur_operator(
+                blur_sigma_t, Hp, Wp,
+                kernel_size=self.kernel_size,
+                device=device, dtype=blur.dtype,
+                freq_sq=freq_sq,
+            ).otf
 
             if active_stage is not None and t < active_stage:
                 # Earlier stages: no gradient computation

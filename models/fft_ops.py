@@ -1,7 +1,13 @@
 """FFT-based convolution and data-consistency operations."""
 
+from __future__ import annotations
+
 import math
+from typing import NamedTuple
+
 import torch
+
+from utils.kernels import psf2otf
 
 
 def fft_conv2d_circular(x: torch.Tensor, otf: torch.Tensor) -> torch.Tensor:
@@ -90,3 +96,68 @@ def gaussian_otf(delta: torch.Tensor, H: int, W: int,
         otf = torch.exp(-0.5 * delta ** 2 * freq_sq)
         otf = otf.unsqueeze(0)  # (1, H, W//2+1)
     return otf.to(torch.complex64)
+
+
+# ── Unified blur operator builder ───────────────────────────────────
+
+
+class BlurOperator(NamedTuple):
+    """Container returned by :func:`build_blur_operator`."""
+    otf: torch.Tensor           # complex, (B, H, W//2+1) or (1, H, W//2+1)
+    psf: torch.Tensor | None    # real, (B, ks, ks) or None (analytic mode)
+
+
+def build_blur_operator(
+    sigma: torch.Tensor | float,
+    H: int,
+    W: int,
+    kernel_size: int = -1,
+    device=None,
+    dtype=torch.float32,
+    freq_sq: torch.Tensor | None = None,
+) -> BlurOperator:
+    """Build a Gaussian blur operator (OTF + optional PSF).
+
+    Args:
+        sigma:       blur standard deviation, scalar or (B,) tensor.
+        H, W:        spatial dimensions of the image (padded size).
+        kernel_size: ``-1`` for analytic (infinite) Gaussian OTF;
+                     positive odd int for a truncated spatial kernel.
+        device, dtype: tensor placement.
+        freq_sq:     precomputed frequency-squared grid from
+                     :func:`precompute_freq_sq` (used only in analytic mode).
+
+    Returns:
+        :class:`BlurOperator` with ``.otf`` and ``.psf``.
+    """
+    if kernel_size == -1:
+        # ── Analytic (infinite Gaussian) path ──
+        otf = gaussian_otf(sigma, H, W, device=device, dtype=dtype,
+                           freq_sq=freq_sq)
+        return BlurOperator(otf=otf, psf=None)
+
+    # ── Truncated spatial-kernel path ──
+    if not isinstance(sigma, torch.Tensor):
+        sigma = torch.tensor(sigma, device=device, dtype=dtype)
+    device = sigma.device
+    dtype = sigma.dtype
+
+    ks = kernel_size
+    ax = torch.arange(ks, device=device, dtype=dtype) - (ks - 1) / 2
+    xx, yy = torch.meshgrid(ax, ax, indexing="ij")
+    dist_sq = xx ** 2 + yy ** 2                       # (ks, ks)
+
+    if sigma.dim() == 0:
+        # scalar sigma → single kernel
+        k = torch.exp(-dist_sq / (2.0 * sigma * sigma))
+        k = k / k.sum()
+        psf = k.unsqueeze(0)                           # (1, ks, ks)
+    else:
+        # batched (B,) sigma → B kernels, vectorized
+        s2 = (sigma.view(-1, 1, 1) ** 2)               # (B, 1, 1)
+        k = torch.exp(-dist_sq.unsqueeze(0) / (2.0 * s2))  # (B, ks, ks)
+        k = k / k.sum(dim=(-2, -1), keepdim=True)
+        psf = k                                         # (B, ks, ks)
+
+    otf = psf2otf(psf, H, W)                           # (B, H, W//2+1) complex
+    return BlurOperator(otf=otf.to(torch.complex64), psf=psf)
