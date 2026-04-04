@@ -200,6 +200,7 @@ def compute_criterion_loss(ctx: TrainContext, result, sharp, blur, blur_sigmas):
         return ctx.criterion(
             result["stage_outputs"], result["stage_targets"],
             x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
+            blur_sigma_deltas=result.get("blur_sigma_deltas"),
         )
     else:
         return ctx.criterion(result["stage_outputs"], result["stage_targets"])
