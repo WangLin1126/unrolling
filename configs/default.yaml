@@ -117,7 +117,7 @@ train:
     filter_type: "gaussian"      # "gaussian" | "butterworth" | "ideal"
     residual_weight: 0.5         # weight for residual loss in cats_combined
     lambda_final: 0.0            # extra weight on final-stage clean-GT loss
-    consistency_weight: 1.0e-8      # weight for data consistency loss (cats_consistency / cats_consistency_all)
+    consistency_weight: 0.05      # weight for data consistency loss (cats_consistency / cats_consistency_all)
     consistency_p: 2.0           # exponent for pixel-sum-then-power consistency loss
 
 # Testing

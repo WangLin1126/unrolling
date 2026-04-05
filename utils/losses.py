@@ -361,8 +361,8 @@ class StagewiseLoss(nn.Module):
                 residual_sigma = residual_sq.sqrt()  # (B,)
                 blurred = self._apply_consistency_blur(stage_outputs[t], residual_sigma)
                 targeted = self._apply_consistency_blur(stage_targets[-1], blur_sigma)
-                l_t = l_t + self._consistency_weight * self._consistency_loss(
-                    blurred, targeted, self._consistency_p,
+                l_t = l_t + self._consistency_weight * self.base_loss(
+                    blurred, targeted
                 )
 
             # ── CATS-Consistency-All: Charbonnier + consistency with y and all previous targets ──
