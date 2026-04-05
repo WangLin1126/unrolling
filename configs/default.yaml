@@ -51,7 +51,10 @@ model:
       num_heads: 2
       ffn_expansion: 2.66
 
-  blur_sigma_schedule: "uniform"   # "uniform" | "trainable" | "geom" | "power"
+  pre_denoiser: false               # add a denoiser before unrolling to denoise the noisy blur
+  pre_denoiser_loss_weight: 1.0    # weight for the pre-denoiser auxiliary loss
+
+  blur_sigma_schedule: "uniform"   # "uniform" | "trainable" | "geom" | "power" | "uniform_cumulative"
   blur_sigma_schedule_kwargs:
     init: "uniform"
     r: 0.8

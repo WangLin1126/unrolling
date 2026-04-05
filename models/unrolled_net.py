@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .schedule import build_blur_sigma_schedule, build_noise_sigma_schedule, build_beta_schedule
-from .denoisers import build_denoiser
+from .denoisers import build_denoiser, apply_denoiser
 from .solvers import build_solver
 from .fft_ops import build_blur_operator, fft_conv2d_circular, precompute_freq_sq
 
@@ -57,6 +57,7 @@ class UnrolledDeblurNet(nn.Module):
         noise_sigma_schedule: str = "loguniform",
         noise_sigma_schedule_kwargs: dict | None = None,
         kernel_size: int = -1,
+        use_pre_denoiser: bool = False,
     ):
         super().__init__()
         self.T = T
@@ -85,6 +86,14 @@ class UnrolledDeblurNet(nn.Module):
         self.beta_schedule = build_beta_schedule(
             name=beta_schedule, T=T, **(beta_kwargs or {}),
         )
+
+        # Optional pre-denoiser: denoises the noisy blurred input before
+        # the unrolling stages.  Its loss is computed against G_sigma * x
+        # (noise-free blur).  Shares freeze state with denoisers[0].
+        if use_pre_denoiser:
+            self.pre_denoiser = build_denoiser(denoiser_name, **dk)
+        else:
+            self.pre_denoiser = None
 
     @torch.no_grad()
     def _compute_targets_on_gpu(
@@ -125,6 +134,7 @@ class UnrolledDeblurNet(nn.Module):
         max_stage: int | None = None,
         active_stage: int | None = None,
         detach_between_stages: bool = False,
+        blur_clean: torch.Tensor | None = None,
     ) -> dict:
         """Run T-stage unrolled deblurring.
 
@@ -182,6 +192,14 @@ class UnrolledDeblurNet(nn.Module):
         blur_pad = F.pad(blur, (p, p, p, p), mode="reflect")
         Hp, Wp = H + 2 * p, W + 2 * p
         freq_sq = precompute_freq_sq(Hp, Wp, device, blur.dtype)
+
+        # ── Pre-denoiser: denoise noisy blur before unrolling ───
+        pre_denoiser_output = None
+        pre_denoiser_target = None
+        if self.pre_denoiser is not None:
+            blur_pad = apply_denoiser(self.pre_denoiser, blur_pad, noise_sigma)
+            pre_denoiser_output = blur_pad[:, :, p:p+H, p:p+W]
+            pre_denoiser_target = blur_clean
 
         # ── Reverse chain on padded grid ────────────────────────
         effective_T = (max_stage + 1) if max_stage is not None else self.T
@@ -241,4 +259,6 @@ class UnrolledDeblurNet(nn.Module):
             "stage_outputs": stage_outputs,
             "stage_targets": stage_targets,
             "blur_sigma_deltas": blur_sigma_deltas,
+            "pre_denoiser_output": pre_denoiser_output,
+            "pre_denoiser_target": pre_denoiser_target,
         }

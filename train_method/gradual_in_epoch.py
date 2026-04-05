@@ -22,11 +22,12 @@ def train_one_epoch_gradual_in_epoch(
     raw_model = unwrap_model(ctx.model)
     raw_crit = unwrap_model(ctx.criterion)
 
-    for step, (blur, sharp, blur_sigmas, noise_sigmas, targets) in enumerate(train_loader, 1):
+    for step, (blur, sharp, blur_sigmas, noise_sigmas, targets, blur_clean) in enumerate(train_loader, 1):
         blur = blur.to(ctx.device, non_blocking=True)
         sharp = sharp.to(ctx.device, non_blocking=True)
         blur_sigmas = blur_sigmas.to(ctx.device, non_blocking=True)
         noise_sigmas = noise_sigmas.to(ctx.device, non_blocking=True)
+        blur_clean = blur_clean.to(ctx.device, non_blocking=True)
         targets_gpu = (
             [t.to(ctx.device, non_blocking=True) for t in targets]
             if ctx.use_precomputed else None
@@ -40,6 +41,7 @@ def train_one_epoch_gradual_in_epoch(
             result = forward_model(
                 ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu,
                 max_stage=t_stage, active_stage=t_stage,
+                blur_clean=blur_clean,
             )
             loss_t = raw_crit.base_loss(
                 result["stage_outputs"][-1],

@@ -179,12 +179,14 @@ def collate_fn(batch):
         blur_sigma:  (B,)
         noise_sigma : (B,)
         targets: list of T+1 tensors, each (B, C, H, W)
+        blur_clean: (B, C, H, W) noise-free blurred image G_sigma * x
     """
     blurs = [b["blur"] for b in batch]
     sharps = [b["sharp"] for b in batch]
     blur_sigmas = torch.tensor([b["blur_sigma"] for b in batch], dtype=torch.float32)
     noise_sigmas = torch.tensor([b["noise_sigma"] for b in batch], dtype=torch.float32)
     target_lists = [b["targets"] for b in batch]
+    blur_cleans = [b["blur_clean"] for b in batch]
 
     T_plus_1 = len(target_lists[0])
     shapes = [x.shape for x in blurs]
@@ -202,16 +204,18 @@ def collate_fn(batch):
 
         blurs = [_pad(b) for b in blurs]
         sharps = [_pad(s) for s in sharps]
+        blur_cleans = [_pad(bc) for bc in blur_cleans]
         target_lists = [[_pad(t) for t in tl] for tl in target_lists]
 
     blur_batch = torch.stack(blurs)
     sharp_batch = torch.stack(sharps)
+    blur_clean_batch = torch.stack(blur_cleans)
     targets_batch = [
         torch.stack([target_lists[b][t] for b in range(len(batch))])
         for t in range(T_plus_1)
     ]
 
-    return blur_batch, sharp_batch, blur_sigmas, noise_sigmas, targets_batch
+    return blur_batch, sharp_batch, blur_sigmas, noise_sigmas, targets_batch, blur_clean_batch
 
 
 def train_val_split(dataset, val_ratio: float, seed: int = 42):
@@ -578,6 +582,7 @@ def main():
             noise_sigma_schedule=mc.get("noise_sigma_schedule", "loguniform"),
             noise_sigma_schedule_kwargs=mc.get("noise_sigma_schedule_kwargs", {}),
             kernel_size=dc["blur"].get("kernel_size", -1),
+            use_pre_denoiser=mc.get("pre_denoiser", False),
         ).to(device)
 
         # Channels-last memory format: cuDNN prefers NHWC layout for Conv2d,
@@ -860,21 +865,23 @@ def main():
 
                 _cl = tc.get("channels_last", True)
                 with torch.no_grad():
-                    for blur, sharp, blur_sigmas, noise_sigmas, targets in val_loader:
+                    for blur, sharp, blur_sigmas, noise_sigmas, targets, blur_clean in val_loader:
                         blur = blur.to(device, non_blocking=True)
                         sharp = sharp.to(device, non_blocking=True)
                         blur_sigmas = blur_sigmas.to(device, non_blocking=True)
                         noise_sigmas = noise_sigmas.to(device, non_blocking=True)
+                        blur_clean = blur_clean.to(device, non_blocking=True)
                         if _cl:
                             blur = blur.to(memory_format=torch.channels_last)
                             sharp = sharp.to(memory_format=torch.channels_last)
+                            blur_clean = blur_clean.to(memory_format=torch.channels_last)
                         if use_precomputed:
                             targets_gpu = [t.to(device, non_blocking=True) for t in targets]
                             if _cl:
                                 targets_gpu = [t.to(memory_format=torch.channels_last) for t in targets_gpu]
-                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu)
+                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=None, precomputed_targets=targets_gpu, blur_clean=blur_clean)
                         else:
-                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None)
+                            result = model(blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas, x_gt=sharp, precomputed_targets=None, blur_clean=blur_clean)
 
                         if use_cats:
                             loss_v, _ = criterion(

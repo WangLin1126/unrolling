@@ -20,11 +20,12 @@ def train_one_epoch_stage_wise_detached(
     train_loss_sum = 0.0
     train_count = 0
 
-    for step, (blur, sharp, blur_sigmas, noise_sigmas, targets) in enumerate(train_loader, 1):
+    for step, (blur, sharp, blur_sigmas, noise_sigmas, targets, blur_clean) in enumerate(train_loader, 1):
         blur = blur.to(ctx.device, non_blocking=True)
         sharp = sharp.to(ctx.device, non_blocking=True)
         blur_sigmas = blur_sigmas.to(ctx.device, non_blocking=True)
         noise_sigmas = noise_sigmas.to(ctx.device, non_blocking=True)
+        blur_clean = blur_clean.to(ctx.device, non_blocking=True)
         targets_gpu = (
             [t.to(ctx.device, non_blocking=True) for t in targets]
             if ctx.use_precomputed else None
@@ -32,7 +33,7 @@ def train_one_epoch_stage_wise_detached(
 
         result = forward_model(
             ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu,
-            detach_between_stages=True,
+            detach_between_stages=True, blur_clean=blur_clean,
         )
         loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
 

@@ -85,17 +85,18 @@ def run_tail_align(
         train_loss_sum_local = 0.0
         train_count_local = 0
 
-        for step, (blur, sharp, blur_sigmas, noise_sigmas, targets) in enumerate(train_loader, 1):
+        for step, (blur, sharp, blur_sigmas, noise_sigmas, targets, blur_clean) in enumerate(train_loader, 1):
             blur = blur.to(ctx.device, non_blocking=True)
             sharp = sharp.to(ctx.device, non_blocking=True)
             blur_sigmas = blur_sigmas.to(ctx.device, non_blocking=True)
             noise_sigmas = noise_sigmas.to(ctx.device, non_blocking=True)
+            blur_clean = blur_clean.to(ctx.device, non_blocking=True)
             targets_gpu = (
                 [t.to(ctx.device, non_blocking=True) for t in targets]
                 if ctx.use_precomputed else None
             )
 
-            result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
+            result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu, blur_clean=blur_clean)
             loss, info = compute_criterion_loss(ctx, result, sharp, blur, blur_sigmas)
 
             tail_optimizer.zero_grad(set_to_none=True)
@@ -142,16 +143,17 @@ def run_tail_align(
             val_count = 0.0
 
             with torch.no_grad():
-                for blur, sharp, blur_sigmas, noise_sigmas, targets in val_loader:
+                for blur, sharp, blur_sigmas, noise_sigmas, targets, blur_clean in val_loader:
                     blur = blur.to(ctx.device, non_blocking=True)
                     sharp = sharp.to(ctx.device, non_blocking=True)
                     blur_sigmas = blur_sigmas.to(ctx.device, non_blocking=True)
                     noise_sigmas = noise_sigmas.to(ctx.device, non_blocking=True)
+                    blur_clean = blur_clean.to(ctx.device, non_blocking=True)
                     targets_gpu = (
                         [t.to(ctx.device, non_blocking=True) for t in targets]
                         if ctx.use_precomputed else None
                     )
-                    result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu)
+                    result = forward_model(ctx, blur, blur_sigmas, noise_sigmas, sharp, targets_gpu, blur_clean=blur_clean)
                     pred = result["pred"]
                     for i in range(pred.shape[0]):
                         val_psnr_sum += _psnr(pred[i], sharp[i])

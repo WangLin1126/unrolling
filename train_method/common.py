@@ -32,20 +32,37 @@ def unwrap_model(m: nn.Module) -> nn.Module:
 
 # ── Freeze / unfreeze helpers ─────────────────────────────────────────
 
+def _set_pre_denoiser_grad(model: nn.Module, requires: bool):
+    """Set requires_grad on pre_denoiser if it exists."""
+    pre = getattr(model, "pre_denoiser", None)
+    if pre is not None:
+        for p in pre.parameters():
+            p.requires_grad = requires
+
+
 def freeze_denoisers_except(model: nn.Module, active_stage: int):
-    """Freeze all denoisers except ``denoisers[active_stage]``."""
+    """Freeze all denoisers except ``denoisers[active_stage]``.
+
+    Pre-denoiser shares freeze state with denoisers[0].
+    """
     for i, denoiser in enumerate(model.denoisers):
         requires = (i == active_stage)
         for p in denoiser.parameters():
             p.requires_grad = requires
+    _set_pre_denoiser_grad(model, active_stage == 0)
 
 
 def freeze_denoisers_up_to(model: nn.Module, last_frozen: int):
-    """Freeze denoisers[0..last_frozen], unfreeze the rest."""
+    """Freeze denoisers[0..last_frozen], unfreeze the rest.
+
+    Pre-denoiser shares freeze state with denoisers[0]: frozen when
+    last_frozen >= 0.
+    """
     for i, denoiser in enumerate(model.denoisers):
         requires = (i > last_frozen)
         for p in denoiser.parameters():
             p.requires_grad = requires
+    _set_pre_denoiser_grad(model, last_frozen < 0)
 
 
 def unfreeze_all_denoisers(model: nn.Module):
@@ -53,6 +70,7 @@ def unfreeze_all_denoisers(model: nn.Module):
     for denoiser in model.denoisers:
         for p in denoiser.parameters():
             p.requires_grad = True
+    _set_pre_denoiser_grad(model, True)
 
 
 def get_active_stage(epoch: int, total_epochs: int, T: int) -> int:
@@ -98,6 +116,13 @@ def build_per_stage_optimizers(
     for denoiser in model.denoisers:
         for p in denoiser.parameters():
             denoiser_param_ids.add(id(p))
+    # Pre-denoiser params share optimizer with denoisers[0]
+    pre_denoiser_params: list[torch.nn.Parameter] = []
+    pre = getattr(model, "pre_denoiser", None)
+    if pre is not None:
+        for p in pre.parameters():
+            denoiser_param_ids.add(id(p))
+            pre_denoiser_params.append(p)
 
     extra_model_params = [
         p for p in model.parameters()
@@ -107,6 +132,8 @@ def build_per_stage_optimizers(
 
     for t in range(T):
         params = list(model.denoisers[t].parameters())
+        if t == 0:
+            params = params + pre_denoiser_params
         if t == T - 1:
             params = params + extra_model_params + criterion_params
         optimizers.append(
@@ -170,7 +197,7 @@ class TrainContext:
 
 def forward_model(ctx: TrainContext, blur, blur_sigmas, noise_sigmas, sharp,
                   targets_gpu, *, max_stage=None, active_stage=None,
-                  detach_between_stages=False):
+                  detach_between_stages=False, blur_clean=None):
     """Run the model forward, handling precomputed vs on-the-fly targets."""
     if ctx.channels_last:
         blur = blur.to(memory_format=torch.channels_last)
@@ -178,12 +205,15 @@ def forward_model(ctx: TrainContext, blur, blur_sigmas, noise_sigmas, sharp,
             sharp = sharp.to(memory_format=torch.channels_last)
         if targets_gpu is not None:
             targets_gpu = [t.to(memory_format=torch.channels_last) for t in targets_gpu]
+        if blur_clean is not None:
+            blur_clean = blur_clean.to(memory_format=torch.channels_last)
     if ctx.use_precomputed:
         return ctx.model(
             blur=blur, blur_sigma=blur_sigmas, noise_sigma=noise_sigmas,
             x_gt=None, precomputed_targets=targets_gpu,
             max_stage=max_stage, active_stage=active_stage,
             detach_between_stages=detach_between_stages,
+            blur_clean=blur_clean,
         )
     else:
         return ctx.model(
@@ -191,18 +221,35 @@ def forward_model(ctx: TrainContext, blur, blur_sigmas, noise_sigmas, sharp,
             x_gt=sharp, precomputed_targets=None,
             max_stage=max_stage, active_stage=active_stage,
             detach_between_stages=detach_between_stages,
+            blur_clean=blur_clean,
         )
 
 
 def compute_criterion_loss(ctx: TrainContext, result, sharp, blur, blur_sigmas):
-    """Compute loss through the StagewiseLoss criterion."""
+    """Compute loss through the StagewiseLoss criterion.
+
+    If the model returned a pre_denoiser_output, its loss against the
+    noise-free blurred target is added with the configured weight.
+    """
     if ctx.use_cats:
-        return ctx.criterion(
+        loss, info = ctx.criterion(
             result["stage_outputs"], result["stage_targets"],
             x_gt=sharp, blur=blur, blur_sigma=blur_sigmas,
         )
     else:
-        return ctx.criterion(result["stage_outputs"], result["stage_targets"])
+        loss, info = ctx.criterion(result["stage_outputs"], result["stage_targets"])
+
+    # Pre-denoiser auxiliary loss
+    pre_out = result.get("pre_denoiser_output")
+    pre_tgt = result.get("pre_denoiser_target")
+    if pre_out is not None and pre_tgt is not None:
+        raw_crit = unwrap_model(ctx.criterion)
+        pre_loss = raw_crit.base_loss(pre_out, pre_tgt)
+        w = ctx.cfg["model"].get("pre_denoiser_loss_weight", 1.0)
+        loss = loss + w * pre_loss
+        info["pre_denoiser_loss"] = pre_loss.item()
+
+    return loss, info
 
 
 def compute_single_stage_loss(ctx: TrainContext, result):

@@ -106,6 +106,26 @@ class PowerBlurSchedule(BlurSigmaSchedule):
 
         return alpha / (alpha.sum() + _EPS)
 
+class UniformCumulativeBlurSchedule(BlurSigmaSchedule):
+    """Uniformly spaced cumulative blur: σ_cum(t) = σ·(t+1)/T.
+
+    Ensures that the cumulative blur strength grows linearly across stages,
+    rather than following sqrt growth (as with uniform deltas).
+
+    Alpha weights: α_t = (2t+1)/T², which sums to 1.
+    delta[0] is the initial (smallest) blur, delta[-1] is the last (largest).
+    """
+
+    def __init__(self, T: int):
+        super().__init__(T)
+        t = torch.arange(T, dtype=torch.float32)
+        alpha = (2 * t + 1) / (T * T)
+        self.register_buffer("_alpha", alpha)
+
+    def _compute_alpha(self, device, dtype):
+        return self._alpha.to(dtype=dtype)
+
+
 def build_blur_sigma_schedule(
     name: str,
     T: int,
@@ -124,6 +144,8 @@ def build_blur_sigma_schedule(
         return GeomBlurSchedule(T=T, r=r, front_heavy=front_heavy)
     if name == "power":
         return PowerBlurSchedule(T=T, p=p, front_heavy=front_heavy)
+    if name == "uniform_cumulative":
+        return UniformCumulativeBlurSchedule(T=T)
     raise ValueError(f"Unknown blur sigma schedule '{name}'")
 
 

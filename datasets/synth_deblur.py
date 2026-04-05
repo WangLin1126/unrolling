@@ -139,6 +139,9 @@ class SyntheticNonBlindDeblur(Dataset):
         y_pad = fft_conv2d_circular(x_pad, otf)
         y = y_pad[:, :, p:p+H, p:p+W]
 
+        # Save noise-free blurred image (G_sigma * x) before adding noise
+        blur_clean = y.squeeze(0).clone()
+
         # add noise
         noise_sigma = 0.0
         if random.random() < self.cfg.noise_prob:
@@ -155,5 +158,6 @@ class SyntheticNonBlindDeblur(Dataset):
             "blur_sigma": blur_sigma,
             "noise_sigma": noise_sigma,
             "targets": targets,               # list of T+1 tensors, each (C, H, W)
+            "blur_clean": blur_clean,         # (C, H, W) noise-free G_sigma * x
             "path": self.paths[idx],
         }
