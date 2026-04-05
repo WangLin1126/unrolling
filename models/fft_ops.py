@@ -1,22 +1,14 @@
-"""FFT-based convolution and data-consistency operations."""
-
 from __future__ import annotations
-
 import math
 from typing import NamedTuple
-
 import torch
-
 from utils.kernels import psf2otf
-
 
 def fft_conv2d_circular(x: torch.Tensor, otf: torch.Tensor) -> torch.Tensor:
     """Circular convolution via FFT.
-
     Args:
         x:   (B, C, H, W) real image
         otf: (B, H, W//2+1) or (1, H, W//2+1) complex OTF
-
     Returns:
         (B, C, H, W) convolved image
     """
@@ -31,9 +23,7 @@ def fft_data_step(x_t: torch.Tensor, v: torch.Tensor,
                   otf: torch.Tensor, beta: torch.Tensor,
                   eps: float = 1e-8) -> torch.Tensor:
     """Closed-form frequency-domain u-update (Wiener-like).
-
     Solves:  u = argmin_u  0.5 ||g * u - x_t||^2  +  beta/2 ||u - v||^2
-
     U(w) = [ conj(G(w)) X_t(w) + beta V(w) ] / [ |G(w)|^2 + beta ]
     """
     X_t = torch.fft.rfft2(x_t)
@@ -58,7 +48,6 @@ def fft_data_step(x_t: torch.Tensor, v: torch.Tensor,
 
 def precompute_freq_sq(H: int, W: int, device, dtype=torch.float32) -> torch.Tensor:
     """Precompute squared frequency grid for reuse across stages.
-
     Returns:
         (H, W//2+1) tensor of (wx² + wy²)
     """
@@ -72,9 +61,7 @@ def gaussian_otf(delta: torch.Tensor, H: int, W: int,
                  device=None, dtype=torch.float32,
                  freq_sq: torch.Tensor | None = None) -> torch.Tensor:
     """Compute the OTF of a 2D Gaussian with std=delta analytically.
-
     G(wx, wy) = exp(-0.5 * delta^2 * (wx^2 + wy^2))
-
     Args:
         delta: scalar (0-dim) or batched (B,) blur std
         freq_sq: precomputed (H, W//2+1) from precompute_freq_sq() for reuse
@@ -99,7 +86,6 @@ def gaussian_otf(delta: torch.Tensor, H: int, W: int,
 
 
 # ── Unified blur operator builder ───────────────────────────────────
-
 
 class BlurOperator(NamedTuple):
     """Container returned by :func:`build_blur_operator`."""
