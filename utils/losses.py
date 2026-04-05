@@ -213,10 +213,8 @@ class StagewiseLoss(nn.Module):
     def _consistency_loss(pred_blurred: torch.Tensor, reference: torch.Tensor,
                           p: float) -> torch.Tensor:
         """Pixel-sum-then-power consistency loss.
-
         When the prediction is correct, the residual should be pure Gaussian
         noise whose spatial sum is approximately zero.
-
         Args:
             pred_blurred: (B, C, H, W) blurred prediction
             reference:    (B, C, H, W) observation or target to compare against
@@ -354,7 +352,7 @@ class StagewiseLoss(nn.Module):
 
             # ── CATS-Consistency: Charbonnier + data consistency with y ──
             elif self.mode == "cats_consistency":
-                assert blur is not None and blur_sigma_deltas is not None, \
+                assert blur_sigma_deltas is not None, \
                     "cats_consistency mode requires blur and blur_sigma_deltas"
                 l_t = self.base_loss(stage_outputs[t], stage_targets[t])
                 # Residual sigma to blur output_t back to y's level:
@@ -362,8 +360,9 @@ class StagewiseLoss(nn.Module):
                 residual_sq = blur_sigma_deltas[:, self.T-1-t:self.T].pow(2).sum(dim=1)
                 residual_sigma = residual_sq.sqrt()  # (B,)
                 blurred = self._apply_consistency_blur(stage_outputs[t], residual_sigma)
+                targeted = self._apply_consistency_blur(stage_targets[-1], blur_sigma)
                 l_t = l_t + self._consistency_weight * self._consistency_loss(
-                    blurred, blur, self._consistency_p,
+                    blurred, targeted, self._consistency_p,
                 )
 
             # ── CATS-Consistency-All: Charbonnier + consistency with y and all previous targets ──
@@ -372,14 +371,14 @@ class StagewiseLoss(nn.Module):
                     "cats_consistency_all mode requires blur and blur_sigma_deltas"
                 assert stage_targets is not None
                 l_t = self.base_loss(stage_outputs[t], stage_targets[t])
-                n_comparisons = t + 1  # 1 with y + t with previous targets
-                w_consist = self._consistency_weight / n_comparisons
+                w_consist = self._consistency_weight / (t + 1)
 
                 # Compare with y
                 residual_sq_y = blur_sigma_deltas[:, self.T-1-t:self.T].pow(2).sum(dim=1)
                 blurred_y = self._apply_consistency_blur(stage_outputs[t], residual_sq_y.sqrt())
+                targeted = self._apply_consistency_blur(stage_targets[-1], blur_sigma)
                 l_t = l_t + w_consist * self._consistency_loss(
-                    blurred_y, blur, self._consistency_p,
+                    blurred, targeted, self._consistency_p,
                 )
 
                 # Compare with each previous stage target s (0..t-1)
