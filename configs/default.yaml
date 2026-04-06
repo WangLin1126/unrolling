@@ -2,7 +2,7 @@
 
 # Data (always full-image, no patching)
 data:
-  dataset_name: "AFHQ-cat"
+  dataset_name: "DIV2K"
   train_glob: "/home/lwang/storage/DIV2K/DIV2K_train_512_grid_10/*.png"
   val_ratio: 0.1
   test_glob: "/home/lwang/storage/DIV2K/DIV2K_valid_512_grid_10/*.png"
@@ -51,8 +51,8 @@ model:
       num_heads: 2
       ffn_expansion: 2.66
 
-  pre_denoiser: false               # add a denoiser before unrolling to denoise the noisy blur
-  pre_denoiser_loss_weight: 1.0    # weight for the pre-denoiser auxiliary loss
+  pre_denoiser: True               # add a denoiser before unrolling to denoise the noisy blur
+  pre_denoiser_loss_weight: 0.25    # weight for the pre-denoiser auxiliary loss
 
   blur_sigma_schedule: "uniform"   # "uniform" | "trainable" | "geom" | "power" | "uniform_cumulative"
   blur_sigma_schedule_kwargs:

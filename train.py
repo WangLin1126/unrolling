@@ -62,14 +62,14 @@ def build_exp_dir(cfg: dict, base: str = "results") -> Path:
     tc = cfg["train"]
     dataset_name = dc.get("dataset_name", "DIV2K")
     denoiser = mc["denoiser"]
-    dk = mc["denoiser_kwargs"][denoiser]
+    pd = "-pd" if mc['pre_denoiser'] else ""
     fh = "front_light-" if not mc.get("blur_sigma_schedule_kwargs", {}).get("front_heavy", True) else ""
     params = (
         f"{fh}"
         f"T{mc['T']}"
         f"-{mc['solver']}"
         f"-{denoiser}"
-        f"-inner{mc.get('inner_iters', 1)}"
+        f"{pd}"
         f"-ks{dc['blur']['kernel_size']}"
         f"-blur_{mc.get('blur_sigma_schedule', 'uniform')}_{dc['blur']['sigma_list']}"
         f"-noise_{dc['blur']['noise_sigma_min']}_{dc['blur']['noise_sigma_max']}"

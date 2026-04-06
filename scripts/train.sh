@@ -8,8 +8,8 @@ NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
 
 # ── Data ────────────────────────────────────────────────────────
-TRAIN_GLOB="/home/linw/storage/DIV2K_train_256_random_5/*.png"
-TEST_GLOB="/home/linw/storage/DIV2K_valid_256_random_5/*.png"
+TRAIN_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_train_256_random_5/*.png"
+TEST_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_valid_256_random_5/*.png"
 VAL_RATIO=0.15
 PAD_BORDER=32
 
@@ -22,8 +22,8 @@ NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
-CHECKPOINT="/home/linw/unrolling/results/DIV2K/T12-hqs-dncnn-inner1-blur_sigma_uniform_4-noise_sigma_0.1_0.1-beta_geom-lossw_uniform-lmode_all/20260404_140156/train/tail_align_final.pth"
-TS=(12)
+CHECKPOINT="null"
+TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
 # geom | power | uniform | trainable
@@ -44,7 +44,7 @@ BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=3
+BATCH_SIZE_PER_GPU=12
 LR=1e-3
 stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
