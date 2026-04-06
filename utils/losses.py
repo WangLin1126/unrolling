@@ -377,8 +377,8 @@ class StagewiseLoss(nn.Module):
                 residual_sq_y = blur_sigma_deltas[:, self.T-1-t:self.T].pow(2).sum(dim=1)
                 blurred_y = self._apply_consistency_blur(stage_outputs[t], residual_sq_y.sqrt())
                 targeted = self._apply_consistency_blur(stage_targets[-1], blur_sigma)
-                l_t = l_t + w_consist * self._consistency_loss(
-                    blurred, targeted, self._consistency_p,
+                l_t = l_t + w_consist * self.base_loss(
+                    blurred_y, targeted
                 )
 
                 # Compare with each previous stage target s (0..t-1)
@@ -386,8 +386,8 @@ class StagewiseLoss(nn.Module):
                     # Deltas from T-1-t to T-2-s (t-s deltas)
                     residual_sq_s = blur_sigma_deltas[:, self.T-1-t:self.T-1-s].pow(2).sum(dim=1)
                     blurred_s = self._apply_consistency_blur(stage_outputs[t], residual_sq_s.sqrt())
-                    l_t = l_t + w_consist * self._consistency_loss(
-                        blurred_s, stage_targets[s], self._consistency_p,
+                    l_t = l_t + w_consist * self.base_loss(
+                        blurred_s, stage_targets[s]
                     )
 
             else:

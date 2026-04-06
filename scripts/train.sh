@@ -31,20 +31,20 @@ FRONT_HEAVY=true
 # dncnn | unet | resblock | drunet | uformer | restormer
 DENOISERS=("dncnn")
 SHARE_DENOISERS=false
-INNER_ITERS=(1)
+INNER_ITER=1
 
 # schedule & loss
 LEARNABLE_LOSS_WEIGHTS=(false)
 # all: gradual change | last: all compare last stage | one_stage: only compute last stage loss 
 # ("cats_freq" "cats_operator" "cats_residual" "cats_combined")
-LOSS_MODES=("cats_consistency")
+LOSS_MODES=("cats_consistency_all")
 # constant | geom | geom_inc | geom_dec | dpir
 BETA_MODES=("geom")
-
+CONSISTENCY_WEIGHTS=(0.1 0.2 0.3 0.4 0.5)
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
 BATCH_SIZE_PER_GPU=14
-LR=5e-4
+LR=1e-3
 stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
 SCHEDULER="cosine"
@@ -69,7 +69,7 @@ for T in "${TS[@]}"; do
 for SOLVER in "${SOLVERS[@]}"; do
 for SIGMA_SCHEDULE in "${SIGMA_SCHEDULES[@]}"; do
 for DENOISER in "${DENOISERS[@]}"; do
-for INNER_ITER in "${INNER_ITERS[@]}"; do
+for CONSISTENCY_WEIGHT in "${CONSISTENCY_WEIGHTS[@]}"; do
 for LEARNABLE_LOSS_WEIGHT in "${LEARNABLE_LOSS_WEIGHTS[@]}"; do
 for LOSS_MODE in "${LOSS_MODES[@]}"; do
 for BETA_MODE in "${BETA_MODES[@]}"; do
@@ -109,6 +109,7 @@ torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
     --train.loss_mode "${LOSS_MODE}" \
     --train.stage_wise_train "${stage_wise_train}" \
     --train.use_compile "${USE_COMPILE}" \
+    --train.cts_kwargs.consistency_weight "${CONSISTENCY_WEIGHT}" \
     --test.batch_size "${TEST_BATCH_SIZE}" \
     --test.num_workers "${TEST_NUM_WORKERS}" \
     --test.save_images "${SAVE_IMAGES}" \
