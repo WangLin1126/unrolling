@@ -22,8 +22,8 @@ NOISE_SIGMA_MAX=0.1
 
 # ── Model ───────────────────────────────────────────────────────
 # Set to "null" to train from scratch, or provide a path to resume
-CHECKPOINT="/home/linw/unrolling/results/DIV2K/T12-hqs-dncnn-inner1-blur_sigma_uniform_4-noise_sigma_0.1_0.1-beta_geom-lossw_uniform-lmode_all/20260404_140156/train/tail_align_final.pth"
-TS=(12)
+CHECKPOINT="null"
+TS=(10)
 # hqs | admm | pg | ista | fista
 SOLVERS=("hqs")
 # geom | power | uniform | trainable
