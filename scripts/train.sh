@@ -8,8 +8,8 @@ NPROC_PER_NODE="${#GPU_ARR[@]}"
 export CUDA_VISIBLE_DEVICES="${GPUS}"
 
 # ── Data ────────────────────────────────────────────────────────
-TRAIN_GLOB="/home/linw/storage/DIV2K_train_256_random_5/*.png"
-TEST_GLOB="/home/linw/storage/DIV2K_valid_256_random_5/*.png"
+TRAIN_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_train_256_random_5/*.png"
+TEST_GLOB="/inspire/hdd/global_user/gexinmu-253108100065/Repos/waitlist/unrolling_deblur/datasets/DIV2K_valid_256_random_5/*.png"
 VAL_RATIO=0.15
 PAD_BORDER=32
 
@@ -44,7 +44,7 @@ BETA_MODES=("geom")
 
 # ── Training ────────────────────────────────────────────────────
 EPOCHS=200
-BATCH_SIZE_PER_GPU=3
+BATCH_SIZE_PER_GPU=14
 LR=1e-3
 stage_wise_train='gradually_freeze'
 WEIGHT_DECAY=0.05
@@ -74,7 +74,8 @@ for INNER_ITER in "${INNER_ITERS[@]}"; do
 for LEARNABLE_LOSS_WEIGHT in "${LEARNABLE_LOSS_WEIGHTS[@]}"; do
 for LOSS_MODE in "${LOSS_MODES[@]}"; do
 for BETA_MODE in "${BETA_MODES[@]}"; do
-torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
+# torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" train.py \
+python train.py \
     --data.train_glob "${TRAIN_GLOB}" \
     --data.test_glob "${TEST_GLOB}" \
     --data.val_ratio "${VAL_RATIO}" \
